@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>現在地の天気</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --bg-2: #111a2e;
+    --surface: #15203a;
+    --surface-2: #1b2848;
+    --border: #25325a;
+    --text: #f1f5ff;
+    --text-sub: #93a3c4;
+    --accent: #4f8cff;
+    --warm: #ffb74d;
+    --cool: #6fc3ff;
+    --rain: #4f8cff;
+    --snow: #b8d8ff;
+    --thunder: #ffd36b;
+    --good: #22c55e;
+    --bad: #ef4444;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 6px 22px rgba(0, 0, 0, .35);
+  }
+  html { color-scheme: dark; }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, "Segoe UI", Roboto, sans-serif;
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #1c2a52 0%, transparent 60%),
+      radial-gradient(1000px 500px at 100% 0%, #25234a 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    line-height: 1.45;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px 16px 24px;
+  }
+
+  header {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 4px 16px;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: .02em;
+  }
+  header .place {
+    font-size: 14px;
+    color: var(--text-sub);
+  }
+  header .meta {
+    font-size: 12px;
+    color: var(--text-sub);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+  header .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #94a3b8;
+    display: inline-block;
+  }
+  header .dot.live { background: var(--good); }
+  header .dot.error { background: var(--bad); }
+  header .notice {
+    font-size: 11px;
+    color: var(--warm);
+    margin-top: 4px;
+    display: none;
+  }
+  header .notice.on { display: block; }
+
+  .grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .card h2 {
+    font-size: 12px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    color: var(--text-sub);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  /* Current weather hero */
+  .hero {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 8px 12px;
+  }
+  .hero .icon {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    font-size: 64px;
+    line-height: 1;
+    text-align: right;
+    filter: drop-shadow(0 4px 10px rgba(0,0,0,.35));
+  }
+  .hero .label {
+    grid-column: 1;
+    grid-row: 1;
+    font-size: 14px;
+    color: var(--text-sub);
+  }
+  .hero .temp {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 48px;
+    font-weight: 700;
+    line-height: 1;
+    font-feature-settings: "tnum";
+  }
+  .hero .temp .unit {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-sub);
+    margin-left: 2px;
+  }
+  .hero .summary {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    font-size: 16px;
+    font-weight: 600;
+    margin-top: 6px;
+  }
+  .hero .meta-row {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    font-size: 13px;
+    color: var(--text-sub);
+    margin-top: 4px;
+  }
+  .hero .meta-row span b { color: var(--text); font-weight: 600; }
+
+  /* Today summary */
+  .today {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px 12px;
+  }
+  .today .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .today .stat .k { font-size: 11px; color: var(--text-sub); letter-spacing: .04em; }
+  .today .stat .v { font-size: 18px; font-weight: 700; font-feature-settings: "tnum"; }
+  .today .stat .v small { font-size: 12px; color: var(--text-sub); margin-left: 2px; font-weight: 500; }
+  .today .stat .v .hi { color: var(--warm); }
+  .today .stat .v .lo { color: var(--cool); }
+
+  /* Recommendation cards */
+  .rec {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 14px;
+    align-items: center;
+  }
+  .rec .em { font-size: 40px; line-height: 1; text-align: center; }
+  .rec .title { font-size: 16px; font-weight: 700; margin: 0 0 2px; }
+  .rec .detail { font-size: 13px; color: var(--text-sub); margin: 0; }
+  .rec.umbrella .em { color: var(--rain); }
+
+  /* Hourly */
+  .hourly-scroll {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    margin: 0 -16px;
+    padding: 0 16px 4px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .hourly-scroll::-webkit-scrollbar { height: 6px; }
+  .hourly-scroll::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 3px; }
+  .hour {
+    min-width: 64px;
+    flex: 0 0 auto;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 6px;
+    text-align: center;
+    scroll-snap-align: start;
+  }
+  .hour .t { font-size: 11px; color: var(--text-sub); }
+  .hour .e { font-size: 22px; line-height: 1; margin: 6px 0; }
+  .hour .deg { font-size: 14px; font-weight: 700; font-feature-settings: "tnum"; }
+  .hour .pop { font-size: 11px; color: var(--cool); margin-top: 2px; min-height: 14px; }
+  .hour.now { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+
+  /* Daily */
+  .daily { display: flex; flex-direction: column; gap: 4px; }
+  .day {
+    display: grid;
+    grid-template-columns: 64px 36px 1fr 90px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .day:last-child { border-bottom: none; }
+  .day .wd { font-size: 13px; color: var(--text-sub); }
+  .day .wd.today { color: var(--text); font-weight: 700; }
+  .day .e { font-size: 22px; text-align: center; }
+  .day .pop { font-size: 12px; color: var(--cool); font-feature-settings: "tnum"; }
+  .day .range {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-feature-settings: "tnum";
+    font-size: 13px;
+  }
+  .day .range .hi { color: var(--warm); font-weight: 700; }
+  .day .range .lo { color: var(--cool); }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 0%, rgba(255,255,255,.05) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+    color: transparent;
+    border-radius: 8px;
+    display: inline-block;
+    min-width: 48px;
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .err-box {
+    color: var(--bad);
+    background: rgba(239, 68, 68, .08);
+    border: 1px solid rgba(239, 68, 68, .35);
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 13px;
+    word-break: break-all;
+    line-height: 1.4;
+    display: none;
+  }
+  .err-box.on { display: block; }
+
+  footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--bg) 70%, rgba(0,0,0,0));
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .refresh {
+    pointer-events: auto;
+    width: 100%;
+    max-width: 448px;
+    height: 52px;
+    border: none;
+    border-radius: 14px;
+    background: var(--accent);
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: transform .08s ease, opacity .15s ease;
+  }
+  .refresh:active { transform: scale(.98); }
+  .refresh:disabled { opacity: .6; cursor: progress; }
+  .refresh .spin {
+    width: 16px; height: 16px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: rot .9s linear infinite;
+    display: none;
+  }
+  .refresh.loading .spin { display: inline-block; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  .note {
+    text-align: center;
+    color: var(--text-sub);
+    font-size: 11px;
+    padding: 8px 4px 0;
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>現在地の天気</h1>
+      <div class="place" id="place">取得中…</div>
+      <div class="meta">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">読み込み中…</span>
+      </div>
+      <div class="notice" id="notice"></div>
+    </header>
+
+    <div class="grid">
+      <section class="card" id="current-card">
+        <div class="hero" id="hero">
+          <div class="label">現在</div>
+          <div class="temp"><span class="skeleton">--</span><span class="unit">°C</span></div>
+          <div class="icon">⏳</div>
+          <div class="summary"><span class="skeleton">読み込み中</span></div>
+          <div class="meta-row"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>今日のサマリー</h2>
+        <div class="today" id="today">
+          <div class="stat"><span class="k">最高 / 最低</span><span class="v"><span class="skeleton">--</span></span></div>
+          <div class="stat"><span class="k">降水確率</span><span class="v"><span class="skeleton">--</span></span></div>
+          <div class="stat"><span class="k">降水量</span><span class="v"><span class="skeleton">--</span></span></div>
+          <div class="stat"><span class="k">日の出 / 日の入</span><span class="v"><span class="skeleton">--</span></span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>おすすめの服装</h2>
+        <div class="rec" id="outfit">
+          <div class="em">⏳</div>
+          <div>
+            <p class="title"><span class="skeleton">読み込み中</span></p>
+            <p class="detail"><span class="skeleton">読み込み中</span></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>傘は必要？</h2>
+        <div class="rec umbrella" id="umbrella">
+          <div class="em">⏳</div>
+          <div>
+            <p class="title"><span class="skeleton">読み込み中</span></p>
+            <p class="detail"><span class="skeleton">読み込み中</span></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>時間別予報（24時間）</h2>
+        <div class="hourly-scroll" id="hourly"></div>
+      </section>
+
+      <section class="card">
+        <h2>週間予報</h2>
+        <div class="daily" id="daily"></div>
+      </section>
+
+      <div class="err-box" id="err-box"></div>
+    </div>
+
+    <p class="note">出典: Open-Meteo（気象データ） / BigDataCloud（地名） / build v2026-05-07</p>
+  </div>
+
+  <footer>
+    <button class="refresh" id="refresh" type="button">
+      <span class="spin" aria-hidden="true"></span>
+      <span class="label">更新</span>
+    </button>
+  </footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const FALLBACK = { lat: 35.681236, lon: 139.767125, name: "東京駅周辺" };
+
+  const placeEl   = document.getElementById("place");
+  const statusDot = document.getElementById("status-dot");
+  const statusTxt = document.getElementById("status-text");
+  const noticeEl  = document.getElementById("notice");
+  const heroEl    = document.getElementById("hero");
+  const todayEl   = document.getElementById("today");
+  const outfitEl  = document.getElementById("outfit");
+  const umbrellaEl= document.getElementById("umbrella");
+  const hourlyEl  = document.getElementById("hourly");
+  const dailyEl   = document.getElementById("daily");
+  const errBox    = document.getElementById("err-box");
+  const refreshBtn= document.getElementById("refresh");
+
+  const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
+  const fmtTemp1 = (n) => Number.isFinite(n) ? n.toFixed(1) : "—";
+  const fmtPct  = (n) => Number.isFinite(n) ? Math.round(n) + "%" : "—";
+  const fmtMm   = (n) => Number.isFinite(n) ? n.toFixed(1) + "mm" : "—";
+  const fmtCoord= (lat, lon) => `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+  const fmtTime = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const fmtWeekday = (iso, isToday) => {
+    const d = new Date(iso);
+    if (isToday) return "今日";
+    return d.toLocaleDateString("ja-JP", { weekday: "short", month: "numeric", day: "numeric" });
+  };
+
+  // WMO weather interpretation -> emoji + Japanese label
+  function weatherCodeToInfo(code) {
+    const M = {
+      0:  ["☀", "快晴"],
+      1:  ["🌤", "晴れ"],
+      2:  ["⛅", "晴れ時々曇り"],
+      3:  ["☁", "曇り"],
+      45: ["🌫", "霧"],
+      48: ["🌫", "霧（着氷）"],
+      51: ["🌦", "霧雨（弱）"],
+      53: ["🌦", "霧雨"],
+      55: ["🌦", "霧雨（強）"],
+      56: ["🌧", "着氷性の霧雨"],
+      57: ["🌧", "着氷性の霧雨（強）"],
+      61: ["🌧", "雨（弱）"],
+      63: ["🌧", "雨"],
+      65: ["🌧", "雨（強）"],
+      66: ["🌧", "着氷性の雨"],
+      67: ["🌧", "着氷性の雨（強）"],
+      71: ["🌨", "雪（弱）"],
+      73: ["🌨", "雪"],
+      75: ["🌨", "雪（強）"],
+      77: ["🌨", "霧雪"],
+      80: ["🌧", "にわか雨（弱）"],
+      81: ["🌧", "にわか雨"],
+      82: ["🌧", "にわか雨（強）"],
+      85: ["🌨", "にわか雪（弱）"],
+      86: ["🌨", "にわか雪（強）"],
+      95: ["⛈", "雷雨"],
+      96: ["⛈", "雷雨（ひょう）"],
+      99: ["⛈", "雷雨（強・ひょう）"],
+    };
+    return M[code] ? { emoji: M[code][0], label: M[code][1] } : { emoji: "❔", label: "情報なし" };
+  }
+
+  function isSnowCode(code) {
+    return [71, 73, 75, 77, 85, 86].includes(code);
+  }
+
+  // Outfit recommendation based on today's tMax (with tMin/code adjustments)
+  function recommendOutfit({ tMax, tMin, code }) {
+    let title, detail, emoji;
+    if (!Number.isFinite(tMax)) {
+      return { emoji: "❔", title: "情報を取得できませんでした", detail: "" };
+    }
+    if (tMax >= 30) {
+      emoji = "🥵"; title = "半袖・短パン / スカート";
+      detail = "猛暑日レベル。帽子・日焼け止め・水分補給を忘れずに。";
+    } else if (tMax >= 25) {
+      emoji = "👕"; title = "半袖シャツ・薄手のパンツ";
+      detail = "夏日。屋外では日差し対策を。";
+    } else if (tMax >= 20) {
+      emoji = "👚"; title = "長袖シャツ または 薄手のカーディガン";
+      detail = "過ごしやすい気温。重ね着で調整しやすく。";
+    } else if (tMax >= 15) {
+      emoji = "🧥"; title = "長袖＋薄手のジャケット";
+      detail = "やや肌寒い時間帯あり。羽織りものを。";
+    } else if (tMax >= 10) {
+      emoji = "🧥"; title = "ジャケット または セーター";
+      detail = "上着なしだと寒く感じる気温です。";
+    } else if (tMax >= 5) {
+      emoji = "🧣"; title = "コート＋マフラー";
+      detail = "本格的に冷え込みます。防寒をしっかりと。";
+    } else {
+      emoji = "🥶"; title = "厚手のコート・手袋・マフラー";
+      detail = "強い寒さ。露出を減らして暖かく。";
+    }
+    const extras = [];
+    if (Number.isFinite(tMin) && Number.isFinite(tMax) && (tMax - tMin) >= 10) {
+      extras.push("朝晩は冷えるので脱ぎ着できる服装が◎");
+    }
+    if (isSnowCode(code)) {
+      extras.push("雪の予報あり。滑りにくい靴・防水対策を。");
+    }
+    if (extras.length) detail = detail + " " + extras.join(" ");
+    return { emoji, title, detail };
+  }
+
+  // Umbrella recommendation
+  function recommendUmbrella({ popMax, precipSum }) {
+    if (!Number.isFinite(popMax) && !Number.isFinite(precipSum)) {
+      return { emoji: "❔", title: "情報を取得できませんでした", detail: "" };
+    }
+    const pop = Number.isFinite(popMax) ? popMax : 0;
+    const mm  = Number.isFinite(precipSum) ? precipSum : 0;
+    if (pop >= 70 || mm >= 5) {
+      return { emoji: "☂", title: "傘は必須です", detail: `降水確率 ${fmtPct(pop)} / 予想降水量 ${fmtMm(mm)}。しっかりした傘を。` };
+    }
+    if (pop >= 50) {
+      return { emoji: "☂", title: "傘を持っていくのがおすすめ", detail: `降水確率 ${fmtPct(pop)}。雨に降られる可能性あり。` };
+    }
+    if (pop >= 30) {
+      return { emoji: "🌂", title: "折りたたみ傘があると安心", detail: `降水確率 ${fmtPct(pop)}。念のため備えを。` };
+    }
+    return { emoji: "☀", title: "傘は不要そうです", detail: `降水確率 ${fmtPct(pop)}。雨の心配は少なめ。` };
+  }
+
+  // --- Network helpers ---
+  async function fetchJson(url, timeoutMs = 8000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  function getLocation() {
+    return new Promise((resolve) => {
+      if (!("geolocation" in navigator)) {
+        resolve({ ...FALLBACK, isFallback: true, reason: "ブラウザが位置情報に対応していません" });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          isFallback: false,
+        }),
+        (err) => {
+          const reason = err && err.code === 1 ? "位置情報の使用が許可されませんでした"
+                       : err && err.code === 2 ? "位置情報を取得できませんでした"
+                       : err && err.code === 3 ? "位置情報の取得がタイムアウトしました"
+                       : "位置情報の取得に失敗しました";
+          resolve({ ...FALLBACK, isFallback: true, reason });
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 }
+      );
+    });
+  }
+
+  async function fetchPlaceName(lat, lon) {
+    try {
+      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ja`;
+      const j = await fetchJson(url, 6000);
+      const parts = [j.principalSubdivision, j.city || j.locality || j.localityInfo?.administrative?.[3]?.name]
+        .filter(Boolean);
+      const name = parts.join(" ").trim();
+      return name || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchForecast(lat, lon) {
+    const params = new URLSearchParams({
+      latitude: String(lat),
+      longitude: String(lon),
+      current: "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+      hourly: "temperature_2m,precipitation_probability,weather_code",
+      daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,sunrise,sunset",
+      timezone: "auto",
+      forecast_days: "7",
+    });
+    return fetchJson(`https://api.open-meteo.com/v1/forecast?${params.toString()}`, 10000);
+  }
+
+  // --- Renderers ---
+  function setStatus(state, text) {
+    statusDot.className = "dot" + (state ? " " + state : "");
+    statusTxt.textContent = text;
+  }
+
+  function showError(msg) {
+    errBox.textContent = "エラー: " + msg;
+    errBox.classList.add("on");
+  }
+  function clearError() {
+    errBox.classList.remove("on");
+    errBox.textContent = "";
+  }
+
+  function renderCurrent(current, todayMax, todayMin) {
+    const info = weatherCodeToInfo(current.weather_code);
+    heroEl.innerHTML = `
+      <div class="label">現在</div>
+      <div class="temp">${fmtTemp(current.temperature_2m)}<span class="unit">°C</span></div>
+      <div class="icon">${info.emoji}</div>
+      <div class="summary">${info.label}</div>
+      <div class="meta-row">
+        <span>体感 <b>${fmtTemp(current.apparent_temperature)}°C</b></span>
+        <span>湿度 <b>${fmtPct(current.relative_humidity_2m)}</b></span>
+        <span>風速 <b>${fmtTemp1(current.wind_speed_10m)} m/s</b></span>
+        <span>今日 <b style="color:var(--warm);">${fmtTemp(todayMax)}°</b> / <b style="color:var(--cool);">${fmtTemp(todayMin)}°</b></span>
+      </div>
+    `;
+  }
+
+  function renderToday(daily) {
+    const tMax = daily.temperature_2m_max?.[0];
+    const tMin = daily.temperature_2m_min?.[0];
+    const pop  = daily.precipitation_probability_max?.[0];
+    const mm   = daily.precipitation_sum?.[0];
+    const sr   = daily.sunrise?.[0];
+    const ss   = daily.sunset?.[0];
+    todayEl.innerHTML = `
+      <div class="stat">
+        <span class="k">最高 / 最低</span>
+        <span class="v"><span class="hi">${fmtTemp(tMax)}°</span> <small>/</small> <span class="lo">${fmtTemp(tMin)}°</span></span>
+      </div>
+      <div class="stat">
+        <span class="k">降水確率（最大）</span>
+        <span class="v">${fmtPct(pop)}</span>
+      </div>
+      <div class="stat">
+        <span class="k">降水量</span>
+        <span class="v">${fmtMm(mm)}</span>
+      </div>
+      <div class="stat">
+        <span class="k">日の出 / 日の入</span>
+        <span class="v">${fmtTime(sr)} <small>/</small> ${fmtTime(ss)}</span>
+      </div>
+    `;
+  }
+
+  function renderRecommendation(el, rec) {
+    el.innerHTML = `
+      <div class="em">${rec.emoji}</div>
+      <div>
+        <p class="title">${rec.title}</p>
+        <p class="detail">${rec.detail || ""}</p>
+      </div>
+    `;
+  }
+
+  function renderHourly(hourly, currentTimeIso) {
+    if (!hourly || !Array.isArray(hourly.time)) {
+      hourlyEl.innerHTML = `<div class="hour"><div class="t">—</div></div>`;
+      return;
+    }
+    const now = new Date(currentTimeIso || Date.now());
+    let startIdx = hourly.time.findIndex((t) => new Date(t).getTime() >= now.getTime() - 30 * 60 * 1000);
+    if (startIdx < 0) startIdx = 0;
+    const slice = hourly.time.slice(startIdx, startIdx + 24);
+    const html = slice.map((iso, i) => {
+      const idx = startIdx + i;
+      const hr = new Date(iso);
+      const info = weatherCodeToInfo(hourly.weather_code[idx]);
+      const t = hourly.temperature_2m[idx];
+      const p = hourly.precipitation_probability?.[idx];
+      const isNow = i === 0;
+      return `
+        <div class="hour ${isNow ? "now" : ""}">
+          <div class="t">${isNow ? "今" : hr.getHours() + "時"}</div>
+          <div class="e">${info.emoji}</div>
+          <div class="deg">${fmtTemp(t)}°</div>
+          <div class="pop">${Number.isFinite(p) && p > 0 ? "💧" + Math.round(p) + "%" : ""}</div>
+        </div>
+      `;
+    }).join("");
+    hourlyEl.innerHTML = html;
+  }
+
+  function renderDaily(daily) {
+    if (!daily || !Array.isArray(daily.time)) {
+      dailyEl.innerHTML = "";
+      return;
+    }
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const html = daily.time.map((iso, i) => {
+      const isToday = iso === todayKey;
+      const info = weatherCodeToInfo(daily.weather_code[i]);
+      const hi = daily.temperature_2m_max[i];
+      const lo = daily.temperature_2m_min[i];
+      const pop = daily.precipitation_probability_max?.[i];
+      return `
+        <div class="day">
+          <span class="wd ${isToday ? "today" : ""}">${fmtWeekday(iso, isToday)}</span>
+          <span class="e">${info.emoji}</span>
+          <span class="pop">${Number.isFinite(pop) && pop > 0 ? "💧" + Math.round(pop) + "%" : ""}</span>
+          <span class="range"><span class="hi">${fmtTemp(hi)}°</span><span class="lo">${fmtTemp(lo)}°</span></span>
+        </div>
+      `;
+    }).join("");
+    dailyEl.innerHTML = html;
+  }
+
+  // --- Main ---
+  async function refreshAll() {
+    refreshBtn.classList.add("loading");
+    refreshBtn.disabled = true;
+    setStatus("", "更新中…");
+    clearError();
+
+    try {
+      const loc = await getLocation();
+
+      // Update notice for fallback location
+      if (loc.isFallback) {
+        noticeEl.textContent = `※ ${loc.reason}。${FALLBACK.name}の天気を表示します。`;
+        noticeEl.classList.add("on");
+      } else {
+        noticeEl.classList.remove("on");
+        noticeEl.textContent = "";
+      }
+
+      // Place name + forecast in parallel
+      const [placeName, forecast] = await Promise.all([
+        loc.isFallback ? Promise.resolve(FALLBACK.name) : fetchPlaceName(loc.lat, loc.lon),
+        fetchForecast(loc.lat, loc.lon),
+      ]);
+
+      placeEl.textContent = placeName || fmtCoord(loc.lat, loc.lon);
+
+      const current = forecast.current || {};
+      const daily = forecast.daily || {};
+      const hourly = forecast.hourly || {};
+
+      const tMax = daily.temperature_2m_max?.[0];
+      const tMin = daily.temperature_2m_min?.[0];
+      const todayCode = daily.weather_code?.[0];
+      const popMax = daily.precipitation_probability_max?.[0];
+      const precipSum = daily.precipitation_sum?.[0];
+
+      renderCurrent(current, tMax, tMin);
+      renderToday(daily);
+      renderRecommendation(outfitEl, recommendOutfit({ tMax, tMin, code: todayCode }));
+      renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
+      renderHourly(hourly, current.time);
+      renderDaily(daily);
+
+      const now = new Date();
+      const time = now.toLocaleTimeString("ja-JP", {
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+      });
+      setStatus("live", `最終更新 ${time}`);
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      const now = new Date();
+      const time = now.toLocaleTimeString("ja-JP", {
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      });
+      setStatus("error", `取得失敗  ${time}`);
+      showError(msg.slice(0, 200));
+    } finally {
+      refreshBtn.classList.remove("loading");
+      refreshBtn.disabled = false;
+    }
+  }
+
+  refreshBtn.addEventListener("click", refreshAll);
+  refreshAll();
+})();
+</script>
+</body>
+</html>
