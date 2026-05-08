@@ -576,10 +576,26 @@
     try {
       const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ja`;
       const j = await fetchJson(url, 6000);
-      const parts = [j.principalSubdivision, j.city || j.locality || j.localityInfo?.administrative?.[3]?.name]
-        .filter(Boolean);
-      const name = parts.join(" ").trim();
-      return name || null;
+
+      // BigDataCloud sometimes duplicates values across fields (e.g. both
+      // principalSubdivision and city return "東京都"). Pick the most specific
+      // city/ward-level admin division that differs from the prefecture.
+      const sub = (j.principalSubdivision || "").trim();
+      const adminLevels = Array.isArray(j.localityInfo?.administrative) ? j.localityInfo.administrative : [];
+      // Higher adminLevel => more specific. Filter to non-empty names that
+      // differ from the prefecture, then pick the deepest one.
+      const specific = adminLevels
+        .filter((a) => a && a.name && a.name.trim() && a.name.trim() !== sub)
+        .sort((a, b) => (b.adminLevel || 0) - (a.adminLevel || 0))[0]?.name?.trim();
+      const cityish = specific
+        || ([j.city, j.locality].map((v) => (v || "").trim()).find((v) => v && v !== sub));
+
+      const parts = [];
+      const seen = new Set();
+      for (const v of [sub, cityish]) {
+        if (v && !seen.has(v)) { seen.add(v); parts.push(v); }
+      }
+      return parts.join(" ") || null;
     } catch {
       return null;
     }
