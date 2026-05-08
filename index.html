@@ -645,6 +645,7 @@
   let walkOrigin = null;
   let walkContext = null;
   let walkSettings = { durationMin: 30, type: "loop" };
+  let walkIsLoading = false;
 
   const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
   const fmtTemp1 = (n) => Number.isFinite(n) ? n.toFixed(1) : "—";
@@ -904,12 +905,12 @@
     return null;
   }
 
-  // Public Overpass instances. The main `overpass-api.de` host frequently
-  // throttles or times out medium-radius queries on weekdays — fall through
-  // to the secondary mirrors before giving up.
+  // Public Overpass instances tried in order. The .de host is generally the
+  // most reliable, kumi has had outages in 2026, and the FR mirror is a
+  // last-resort fallback.
   const OVERPASS_MIRRORS = [
-    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.openstreetmap.fr/api/interpreter",
   ];
 
@@ -920,7 +921,7 @@
   // any band the user might pick.
   async function fetchNearbyPois(lat, lon, radiusKm) {
     const radius = Math.max(300, Math.round(radiusKm * 1000));
-    const query = `[out:json][timeout:20];
+    const query = `[out:json][timeout:30];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
   nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
@@ -932,7 +933,7 @@ out center 200;`;
     let lastErr = null;
     for (const url of OVERPASS_MIRRORS) {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 15000);
+      const t = setTimeout(() => ctrl.abort(), 30000);
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -1129,12 +1130,14 @@ out center 200;`;
     updateWalkRerollButton();
   }
 
-  // Re-render walk suggestions from the cached POI set. This is now sync —
-  // settings changes (time / type) just re-filter and re-rank, no network.
-  // The big fetch happens once per refreshAll, into walkPoisAll.
+  // Re-render walk suggestions from the cached POI set. This is sync —
+  // settings changes (time) just re-filter and re-rank, no network. While
+  // an Overpass fetch is in flight (walkIsLoading), leave the loading
+  // message in place and only update the budget text.
   function refreshWalkSuggestions() {
     if (!walkOrigin || !walkContext || !walkLastAdvice) return;
     updateWalkBudgetText();
+    if (walkIsLoading) return;
     if (walkLastAdvice.skip) {
       walkPoisRanked = [];
       walkShownIds = new Set();
@@ -1144,7 +1147,7 @@ out center 200;`;
     if (!walkPoisAll || walkPoisAll.length === 0) {
       walkPoisRanked = [];
       walkShownIds = new Set();
-      walkListEl.innerHTML = `<div class="walk-empty">候補データを取得できていません。下の「更新」を押して再取得してください。</div>`;
+      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました。下の「更新」で再試行してください。</div>`;
       setWalkMarkers([], walkOrigin.lat, walkOrigin.lon);
       updateWalkRerollButton();
       return;
@@ -1157,6 +1160,35 @@ out center 200;`;
     walkShownIds = new Set();
     const dests = pickWalkBatch(walkPoisRanked, walkShownIds);
     renderWalk(dests, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
+  }
+
+  // Show the walk card in a loading state and start a background Overpass
+  // fetch. Other cards have already rendered by this point so the user
+  // can read the weather while POIs come in.
+  function showWalkLoadingState() {
+    walkSummaryEl.textContent = walkLastAdvice ? walkLastAdvice.headline : "";
+    walkTipEl.textContent = walkLastAdvice && walkLastAdvice.tip ? "💡 " + walkLastAdvice.tip : "";
+    walkListEl.innerHTML = `<div class="walk-empty">候補を検索中…（数秒〜30秒）</div>`;
+    walkRerollBtn.classList.add("hidden");
+    updateWalkBudgetText();
+  }
+
+  async function fetchWalkInBackground(lat, lon) {
+    walkIsLoading = true;
+    showWalkLoadingState();
+    try {
+      walkPoisAll = await fetchNearbyPois(lat, lon, WALK_FETCH_MAX_KM);
+    } catch (e) {
+      walkPoisAll = [];
+      walkIsLoading = false;
+      const reason = (e && e.message) ? String(e.message).slice(0, 80) : "";
+      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました${reason ? "（" + reason + "）" : ""}。下の「更新」で再試行してください。</div>`;
+      setWalkMarkers([], lat, lon);
+      updateWalkRerollButton();
+      return;
+    }
+    walkIsLoading = false;
+    refreshWalkSuggestions();
   }
 
   function buildWalkControls() {
@@ -1433,18 +1465,16 @@ out center 200;`;
         noticeEl.textContent = "";
       }
 
-      // Place name + forecast + AMeDAS observation + nearby walking POIs in
-      // parallel. AMeDAS only covers Japan and Overpass is rate-limited; both
-      // fall back silently so the rest of the UI keeps working.
-      // The walk POIs are fetched once at the worst-case radius so changing
-      // duration/type later only re-filters the cache.
-      const [placeName, forecast, amedas, pois] = await Promise.all([
+      // Place name + forecast + AMeDAS observation in parallel. The walk
+      // POIs (Overpass) are intentionally NOT in this Promise.all so the
+      // weather/temperature card can render immediately even when the
+      // public Overpass servers are slow. The walk fetch is kicked off
+      // separately below and updates the walk card when it lands.
+      const [placeName, forecast, amedas] = await Promise.all([
         loc.isFallback ? Promise.resolve(FALLBACK.name) : fetchPlaceName(loc.lat, loc.lon),
         fetchForecast(loc.lat, loc.lon),
         fetchAmedasNearest(loc.lat, loc.lon).catch(() => null),
-        fetchNearbyPois(loc.lat, loc.lon, WALK_FETCH_MAX_KM).catch(() => []),
       ]);
-      walkPoisAll = pois;
 
       const displayName = placeName || fmtCoord(loc.lat, loc.lon);
       placeEl.textContent = displayName;
@@ -1465,16 +1495,23 @@ out center 200;`;
       renderRecommendation(outfitEl, recommendOutfit({ tMax, tMin, code: todayCode }));
       renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
 
-      // Walk recommendation: store context and let refreshWalkSuggestions()
-      // filter the freshly populated walkPoisAll cache for the active
-      // duration/type settings. Settings changes after this just re-filter
-      // synchronously; no further Overpass calls until the next refreshAll.
+      // Walk recommendation: set up context, then either render the
+      // skip-state immediately (heavy weather) or kick off the Overpass
+      // fetch in the background. The fetch deliberately runs after the
+      // rest of the UI has already rendered so the user can read the
+      // weather/temperature without waiting for Overpass.
       const tempForWalk = (amedas && Number.isFinite(amedas.temp)) ? amedas.temp : tMax;
       const walkAdvice = getWalkAdvice(todayCode, tempForWalk);
       walkLastAdvice = walkAdvice;
       walkOrigin = { lat: loc.lat, lon: loc.lon };
       walkContext = { weatherCode: todayCode, tempForDay: tempForWalk };
-      refreshWalkSuggestions();
+      walkPoisAll = [];
+      if (walkAdvice.skip) {
+        walkIsLoading = false;
+        refreshWalkSuggestions();
+      } else {
+        fetchWalkInBackground(loc.lat, loc.lon);
+      }
 
       renderHourly(hourly, current.time);
       renderDaily(daily);
