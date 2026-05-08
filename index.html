@@ -253,7 +253,7 @@
   #map {
     height: 220px;
     width: 100%;
-    background: var(--surface-2);
+    background: #e5e7eb;
   }
   #map.unavailable {
     display: flex;
@@ -262,17 +262,11 @@
     color: var(--text-sub);
     font-size: 12px;
   }
-  /* Match Leaflet attribution to dark theme */
   .leaflet-control-attribution {
-    background: rgba(11, 18, 32, .7) !important;
-    color: var(--text-sub) !important;
+    background: rgba(255, 255, 255, .85) !important;
+    color: #4b5563 !important;
   }
-  .leaflet-control-attribution a { color: var(--accent) !important; }
-  .leaflet-bar a {
-    background: var(--surface-2) !important;
-    color: var(--text) !important;
-    border-bottom-color: var(--border) !important;
-  }
+  .leaflet-control-attribution a { color: #1d4ed8 !important; }
   .pin {
     font-size: 30px;
     line-height: 1;
@@ -737,7 +731,7 @@
         attributionControl: true,
         scrollWheelZoom: false,
       }).setView([lat, lon], 14);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, &copy; <a href="https://carto.com/attributions">CARTO</a>',
         subdomains: "abcd",
         maxZoom: 19,

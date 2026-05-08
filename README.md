@@ -30,7 +30,7 @@ GitHub Pages を有効化すれば、HTTPS で簡単に公開できます。
 - 気象データ: [Open-Meteo](https://open-meteo.com/)（API キー不要・無料）
 - 地名（逆ジオコーディング）: [BigDataCloud](https://www.bigdatacloud.com/)（API キー不要・無料）
 - 地図ライブラリ: [Leaflet](https://leafletjs.com/)（CDN 経由）
-- 地図タイル: [CARTO Dark Matter](https://carto.com/basemaps/) ＋ [OpenStreetMap](https://www.openstreetmap.org/)
+- 地図タイル: [CARTO Voyager](https://carto.com/basemaps/) ＋ [OpenStreetMap](https://www.openstreetmap.org/)
 
 ## ファイル構成
 
