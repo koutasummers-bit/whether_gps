@@ -614,6 +614,13 @@
             <span class="walk-control-label">時間</span>
             <div class="walk-segment" id="walk-duration"></div>
           </div>
+          <div class="walk-control-row">
+            <span class="walk-control-label">形式</span>
+            <div class="walk-segment" id="walk-type">
+              <button type="button" data-type="loop">往復（同じ地点に戻る）</button>
+              <button type="button" data-type="oneway">片道（別の地点へ）</button>
+            </div>
+          </div>
         </div>
         <div class="walk-budget" id="walk-budget"></div>
         <div class="walk-list" id="walk-list"></div>
@@ -669,6 +676,7 @@
   const walkRerollBtn  = document.getElementById("walk-reroll");
   const walkBudgetEl   = document.getElementById("walk-budget");
   const walkDurationEl = document.getElementById("walk-duration");
+  const walkTypeEl     = document.getElementById("walk-type");
 
   let mapInstance = null;
   let mapMarker = null;
@@ -912,14 +920,15 @@
   // type (loop or one-way); getWalkTarget converts those into the ideal
   // one-way distance to a turnaround/destination plus an acceptance window.
   const WALK_PACE_KMH = 4.0;
-  // Single fetch radius. Matches the original working implementation
-  // (1.6 km) where Overpass queries finished reliably even on the user's
-  // network. With 30/45 min loop options:
-  //   * 30 min loop: ideal 1.0 km, max 1.3 km — fully covered.
-  //   * 45 min loop: ideal 1.5 km, max 1.95 km — upper edge clipped to
-  //     1.6 km, so 45-min walks may be slightly shorter than requested
-  //     but still produce useful candidates.
-  const WALK_FETCH_MAX_KM = 1.6;
+  // Single fetch radius. Sized to cover the worst case among the active
+  // settings (30/45 min × loop/oneway):
+  //   * 30 min loop:    ideal 1.0 km, max 1.3 km
+  //   * 45 min loop:    ideal 1.5 km, max 1.95 km
+  //   * 30 min oneway:  ideal 2.0 km, max 2.6 km
+  //   * 45 min oneway:  ideal 3.0 km, max 3.9 km  ← worst case
+  // 4 km gives a small buffer over that worst case. The CORS-proxy chain
+  // handles any iOS Safari content-blocker quirks transparently.
+  const WALK_FETCH_MAX_KM = 4.0;
 
   function getWalkTarget(durationMin, type) {
     const totalKm = (durationMin / 60) * WALK_PACE_KMH;
@@ -1143,7 +1152,13 @@ out center 150;`;
 
   function updateWalkBudgetText() {
     const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
-    walkBudgetEl.textContent = `所要時間目安: ${walkSettings.durationMin}分（往復 約 ${(target.oneWayIdeal * 2).toFixed(1)}km）`;
+    let line;
+    if (walkSettings.type === "loop") {
+      line = `所要時間目安: ${walkSettings.durationMin}分（往復 約 ${(target.oneWayIdeal * 2).toFixed(1)}km）`;
+    } else {
+      line = `所要時間目安: ${walkSettings.durationMin}分（片道 約 ${target.oneWayIdeal.toFixed(1)}km）`;
+    }
+    walkBudgetEl.textContent = line;
   }
 
   function renderWalk(destinations, advice, origLat, origLon) {
@@ -1164,10 +1179,13 @@ out center 150;`;
       return;
     }
 
+    const isLoop = walkSettings.type === "loop";
     walkListEl.innerHTML = destinations.map((d, i) => {
       const distM = Math.round(d.distanceKm * 1000);
       const oneWayMin = Math.round((d.distanceKm / WALK_PACE_KMH) * 60);
-      const meta = `${d.type.label} · 往復 ${oneWayMin * 2}分（片道 ${distM}m）`;
+      const meta = isLoop
+        ? `${d.type.label} · 往復 ${oneWayMin * 2}分（片道 ${distM}m）`
+        : `${d.type.label} · 片道 ${oneWayMin}分（${distM}m）`;
       const url = googleMapsWalkUrl(origLat, origLon, d.lat, d.lon);
       return `
         <a class="walk-item" href="${url}" target="_blank" rel="noopener"
@@ -1269,6 +1287,17 @@ out center 150;`;
         walkSettings.durationMin = v;
         walkDurationEl.querySelectorAll("button").forEach((b) =>
           b.classList.toggle("active", Number(b.dataset.duration) === v));
+        refreshWalkSuggestions();
+      });
+    });
+    walkTypeEl.querySelectorAll("button").forEach((btn) => {
+      if (btn.dataset.type === walkSettings.type) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        const v = btn.dataset.type;
+        if (v === walkSettings.type) return;
+        walkSettings.type = v;
+        walkTypeEl.querySelectorAll("button").forEach((b) =>
+          b.classList.toggle("active", b.dataset.type === v));
         refreshWalkSuggestions();
       });
     });
