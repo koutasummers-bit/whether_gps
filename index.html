@@ -270,6 +270,52 @@
     color: var(--text-sub);
     margin: 10px 0 0;
   }
+  .walk-controls {
+    display: grid;
+    gap: 8px;
+    margin: 10px 0 4px;
+  }
+  .walk-control-row {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    align-items: center;
+    gap: 10px;
+  }
+  .walk-control-label {
+    font-size: 11px;
+    color: var(--text-sub);
+    letter-spacing: .04em;
+  }
+  .walk-segment {
+    display: flex;
+    gap: 3px;
+    background: var(--surface-2);
+    padding: 3px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .walk-segment::-webkit-scrollbar { display: none; }
+  .walk-segment button {
+    flex: 1 0 auto;
+    background: transparent;
+    color: var(--text-sub);
+    border: none;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    font-family: inherit;
+  }
+  .walk-segment button.active {
+    background: var(--accent);
+    color: #ffffff;
+  }
+  .walk-segment button:disabled { opacity: .5; cursor: not-allowed; }
   .walk-reroll {
     width: 100%;
     margin-top: 10px;
@@ -522,7 +568,20 @@
       <section class="card" id="walk-card">
         <h2>今日の散歩コース提案</h2>
         <div class="walk-summary" id="walk-summary"><span class="skeleton">読み込み中</span></div>
-        <div class="walk-budget">所要時間目安: 30〜45分（往復 2〜3km）</div>
+        <div class="walk-controls">
+          <div class="walk-control-row">
+            <span class="walk-control-label">時間</span>
+            <div class="walk-segment" id="walk-duration"></div>
+          </div>
+          <div class="walk-control-row">
+            <span class="walk-control-label">形式</span>
+            <div class="walk-segment" id="walk-type">
+              <button type="button" data-type="loop">往復（同じ地点に戻る）</button>
+              <button type="button" data-type="oneway">片道（別の地点へ）</button>
+            </div>
+          </div>
+        </div>
+        <div class="walk-budget" id="walk-budget"></div>
         <div class="walk-list" id="walk-list"></div>
         <button class="walk-reroll hidden" id="walk-reroll" type="button">🔄 別の候補を見る</button>
         <p class="walk-tip" id="walk-tip"></p>
@@ -570,21 +629,30 @@
   const errBox    = document.getElementById("err-box");
   const refreshBtn= document.getElementById("refresh");
   const mapEl     = document.getElementById("map");
-  const walkSummaryEl = document.getElementById("walk-summary");
-  const walkListEl    = document.getElementById("walk-list");
-  const walkTipEl     = document.getElementById("walk-tip");
-  const walkRerollBtn = document.getElementById("walk-reroll");
+  const walkSummaryEl  = document.getElementById("walk-summary");
+  const walkListEl     = document.getElementById("walk-list");
+  const walkTipEl      = document.getElementById("walk-tip");
+  const walkRerollBtn  = document.getElementById("walk-reroll");
+  const walkBudgetEl   = document.getElementById("walk-budget");
+  const walkDurationEl = document.getElementById("walk-duration");
+  const walkTypeEl     = document.getElementById("walk-type");
 
   let mapInstance = null;
   let mapMarker = null;
   let walkMarkers = [];
 
-  // Walk recommendation state, used so the reroll button can pick a fresh
-  // batch from the same Overpass result without re-fetching.
+  // Walk recommendation state. `walkPoisRanked` is the score-sorted set the
+  // reroll button cycles through, `walkContext` keeps weather inputs so we
+  // can re-rank when the user changes time/type without redoing the weather
+  // logic, and `walkSettings` mirrors the segmented controls.
+  const WALK_DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
   let walkPoisRanked = [];
   let walkShownIds = new Set();
   let walkLastAdvice = null;
   let walkOrigin = null;
+  let walkContext = null;
+  let walkSettings = { durationMin: 45, type: "loop" };
+  let walkFetchSeq = 0; // cancels stale refetches when settings change rapidly
 
   const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
   const fmtTemp1 = (n) => Number.isFinite(n) ? n.toFixed(1) : "—";
@@ -806,12 +874,19 @@
   }
 
   // --- Walk course recommendation (Overpass / OSM) ---
-  // Walking pace 4 km/h, target 30-45 min round trip => one-way 1.0-1.5 km.
-  // Accept 0.85-1.6 km to give a few candidates to pick from.
+  // Walking pace 4 km/h. The user picks a duration in 15-min steps and a
+  // type (loop or one-way); getWalkTarget converts those into the ideal
+  // one-way distance to a turnaround/destination plus an acceptance window.
   const WALK_PACE_KMH = 4.0;
-  const WALK_ONEWAY_MIN_KM = 0.85;
-  const WALK_ONEWAY_MAX_KM = 1.6;
-  const WALK_IDEAL_ONEWAY_KM = 1.25;
+
+  function getWalkTarget(durationMin, type) {
+    const totalKm = (durationMin / 60) * WALK_PACE_KMH;
+    const oneWayIdeal = type === "loop" ? totalKm / 2 : totalKm;
+    // ±30% gives a few candidates to choose from at each duration setting.
+    const oneWayMin = Math.max(0.15, oneWayIdeal * 0.7);
+    const oneWayMax = oneWayIdeal * 1.3;
+    return { oneWayIdeal, oneWayMin, oneWayMax, totalKm };
+  }
 
   const POI_TYPES = [
     { key: "park",      emoji: "🌳", label: "公園",   match: (t) => t.leisure === "park" },
@@ -830,9 +905,11 @@
     return null;
   }
 
-  async function fetchNearbyPois(lat, lon) {
-    const radius = Math.round(WALK_ONEWAY_MAX_KM * 1000);
-    const query = `[out:json][timeout:15];
+  async function fetchNearbyPois(lat, lon, target) {
+    // Add a small buffer to the search radius so POIs near the upper bound
+    // are not cut off by Overpass' rounding to integer meters.
+    const radius = Math.max(300, Math.round(target.oneWayMax * 1100));
+    const query = `[out:json][timeout:25];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
   nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
@@ -841,7 +918,7 @@
 );
 out center;`;
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15000);
+    const t = setTimeout(() => ctrl.abort(), 25000);
     try {
       const res = await fetch("https://overpass-api.de/api/interpreter", {
         method: "POST",
@@ -864,7 +941,7 @@ out center;`;
         const type = classifyPoi(tags);
         if (!type) continue;
         const distanceKm = haversineKm(lat, lon, eLat, eLon);
-        if (distanceKm < WALK_ONEWAY_MIN_KM || distanceKm > WALK_ONEWAY_MAX_KM) continue;
+        if (distanceKm < target.oneWayMin || distanceKm > target.oneWayMax) continue;
         const id = `${el.type || "node"}/${el.id}`;
         pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
       }
@@ -875,13 +952,13 @@ out center;`;
   }
 
   // Attach a weather-aware score to each POI and sort the array in place.
-  function scoreAndSortPois(pois, weatherCode, tempForDay) {
+  function scoreAndSortPois(pois, weatherCode, tempForDay, idealKm) {
     const isHot = Number.isFinite(tempForDay) && tempForDay >= 30;
     const isLightRain = [51, 53, 55, 56, 57].includes(weatherCode);
     const basePriority = { park: 5, garden: 4, viewpoint: 4, shrine: 3, temple: 3, worship: 2, historic: 2 };
     for (const p of pois) {
       let s = basePriority[p.type.key] ?? 1;
-      s -= Math.abs(p.distanceKm - WALK_IDEAL_ONEWAY_KM) * 2;
+      s -= Math.abs(p.distanceKm - idealKm) * 2;
       if (isHot && (p.type.key === "park" || p.type.key === "garden")) s += 1;
       if (isLightRain && (p.type.key === "shrine" || p.type.key === "temple")) s += 0.5;
       p._score = s;
@@ -982,9 +1059,21 @@ out center;`;
     walkRerollBtn.classList.toggle("hidden", !canReroll);
   }
 
+  function updateWalkBudgetText() {
+    const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
+    if (walkSettings.type === "loop") {
+      const totalKmRounded = (target.oneWayIdeal * 2).toFixed(1);
+      walkBudgetEl.textContent = `所要時間目安: ${walkSettings.durationMin}分（往復 約 ${totalKmRounded}km）`;
+    } else {
+      const oneWayRounded = target.oneWayIdeal.toFixed(1);
+      walkBudgetEl.textContent = `所要時間目安: ${walkSettings.durationMin}分（片道 約 ${oneWayRounded}km）`;
+    }
+  }
+
   function renderWalk(destinations, advice, origLat, origLon) {
     walkSummaryEl.textContent = advice.headline;
     walkTipEl.textContent = advice.tip ? "💡 " + advice.tip : "";
+    updateWalkBudgetText();
 
     if (advice.skip) {
       walkListEl.innerHTML = "";
@@ -999,9 +1088,13 @@ out center;`;
       return;
     }
 
+    const isLoop = walkSettings.type === "loop";
     walkListEl.innerHTML = destinations.map((d, i) => {
       const distM = Math.round(d.distanceKm * 1000);
-      const roundTripMin = Math.round((d.distanceKm * 2 / WALK_PACE_KMH) * 60);
+      const oneWayMin = Math.round((d.distanceKm / WALK_PACE_KMH) * 60);
+      const meta = isLoop
+        ? `${d.type.label} · 往復 ${oneWayMin * 2}分（片道 ${distM}m）`
+        : `${d.type.label} · 片道 ${oneWayMin}分（${distM}m）`;
       const url = googleMapsWalkUrl(origLat, origLon, d.lat, d.lon);
       return `
         <a class="walk-item" href="${url}" target="_blank" rel="noopener"
@@ -1010,7 +1103,7 @@ out center;`;
           <span class="walk-emoji">${d.type.emoji}</span>
           <div>
             <div class="walk-name">${d.name}</div>
-            <div class="walk-meta">${d.type.label} · 往復 ${roundTripMin}分（片道 ${distM}m）</div>
+            <div class="walk-meta">${meta}</div>
           </div>
           <span class="walk-arrow">↗</span>
         </a>
@@ -1019,6 +1112,69 @@ out center;`;
     setWalkMarkers(destinations, origLat, origLon);
     updateWalkRerollButton();
   }
+
+  // Re-fetch POIs for the current walkSettings and re-render. Sequence
+  // counter discards stale responses if the user toggles settings while a
+  // previous request is still in flight.
+  async function refreshWalkSuggestions() {
+    if (!walkOrigin || !walkContext || !walkLastAdvice) return;
+    if (walkLastAdvice.skip) {
+      walkPoisRanked = [];
+      walkShownIds = new Set();
+      renderWalk([], walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
+      return;
+    }
+    const seq = ++walkFetchSeq;
+    const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
+    walkListEl.innerHTML = `<div class="walk-empty">候補を検索中…</div>`;
+    walkRerollBtn.classList.add("hidden");
+    updateWalkBudgetText();
+    try {
+      const pois = await fetchNearbyPois(walkOrigin.lat, walkOrigin.lon, target);
+      if (seq !== walkFetchSeq) return;
+      walkPoisRanked = scoreAndSortPois(pois, walkContext.weatherCode, walkContext.tempForDay, target.oneWayIdeal);
+      walkShownIds = new Set();
+      const dests = pickWalkBatch(walkPoisRanked, walkShownIds);
+      renderWalk(dests, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
+    } catch {
+      if (seq !== walkFetchSeq) return;
+      walkPoisRanked = [];
+      walkShownIds = new Set();
+      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました</div>`;
+      setWalkMarkers([], walkOrigin.lat, walkOrigin.lon);
+      updateWalkRerollButton();
+    }
+  }
+
+  function buildWalkControls() {
+    walkDurationEl.innerHTML = WALK_DURATION_OPTIONS.map((min) => {
+      const active = min === walkSettings.durationMin ? " active" : "";
+      return `<button type="button" class="${active}" data-duration="${min}">${min}分</button>`;
+    }).join("");
+    walkDurationEl.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = Number(btn.dataset.duration);
+        if (!Number.isFinite(v) || v === walkSettings.durationMin) return;
+        walkSettings.durationMin = v;
+        walkDurationEl.querySelectorAll("button").forEach((b) =>
+          b.classList.toggle("active", Number(b.dataset.duration) === v));
+        refreshWalkSuggestions();
+      });
+    });
+    walkTypeEl.querySelectorAll("button").forEach((btn) => {
+      if (btn.dataset.type === walkSettings.type) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        const v = btn.dataset.type;
+        if (v === walkSettings.type) return;
+        walkSettings.type = v;
+        walkTypeEl.querySelectorAll("button").forEach((b) =>
+          b.classList.toggle("active", b.dataset.type === v));
+        refreshWalkSuggestions();
+      });
+    });
+  }
+  buildWalkControls();
+  updateWalkBudgetText();
 
   function getLocation() {
     return new Promise((resolve) => {
@@ -1278,11 +1434,12 @@ out center;`;
       // Place name + forecast + AMeDAS observation + nearby walking POIs in
       // parallel. AMeDAS only covers Japan and Overpass is rate-limited; both
       // fall back silently so the rest of the UI keeps working.
+      const initialWalkTarget = getWalkTarget(walkSettings.durationMin, walkSettings.type);
       const [placeName, forecast, amedas, pois] = await Promise.all([
         loc.isFallback ? Promise.resolve(FALLBACK.name) : fetchPlaceName(loc.lat, loc.lon),
         fetchForecast(loc.lat, loc.lon),
         fetchAmedasNearest(loc.lat, loc.lon).catch(() => null),
-        fetchNearbyPois(loc.lat, loc.lon).catch(() => []),
+        fetchNearbyPois(loc.lat, loc.lon, initialWalkTarget).catch(() => []),
       ]);
 
       const displayName = placeName || fmtCoord(loc.lat, loc.lon);
@@ -1305,18 +1462,24 @@ out center;`;
       renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
 
       // Walk recommendation: skip suggestions in heavy weather, otherwise
-      // score+sort all POIs once and show the first batch of 3. The reroll
-      // button advances through the sorted list using the same state.
+      // score+sort the POIs that came back with the current settings and
+      // show the first batch. Settings changes call refreshWalkSuggestions
+      // separately to refetch with a new radius if needed.
       const tempForWalk = (amedas && Number.isFinite(amedas.temp)) ? amedas.temp : tMax;
       const walkAdvice = getWalkAdvice(todayCode, tempForWalk);
-      walkPoisRanked = walkAdvice.skip ? [] : scoreAndSortPois(pois, todayCode, tempForWalk);
-      walkShownIds = new Set();
       walkLastAdvice = walkAdvice;
       walkOrigin = { lat: loc.lat, lon: loc.lon };
-      const walkDestinations = walkAdvice.skip
-        ? []
-        : pickWalkBatch(walkPoisRanked, walkShownIds);
-      renderWalk(walkDestinations, walkAdvice, loc.lat, loc.lon);
+      walkContext = { weatherCode: todayCode, tempForDay: tempForWalk };
+      if (walkAdvice.skip) {
+        walkPoisRanked = [];
+        walkShownIds = new Set();
+        renderWalk([], walkAdvice, loc.lat, loc.lon);
+      } else {
+        walkPoisRanked = scoreAndSortPois(pois, todayCode, tempForWalk, initialWalkTarget.oneWayIdeal);
+        walkShownIds = new Set();
+        const walkDestinations = pickWalkBatch(walkPoisRanked, walkShownIds);
+        renderWalk(walkDestinations, walkAdvice, loc.lat, loc.lon);
+      }
 
       renderHourly(hourly, current.time);
       renderDaily(daily);
