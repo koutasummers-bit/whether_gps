@@ -651,7 +651,7 @@
   let walkLastAdvice = null;
   let walkOrigin = null;
   let walkContext = null;
-  let walkSettings = { durationMin: 45, type: "loop" };
+  let walkSettings = { durationMin: 30, type: "loop" };
   let walkFetchSeq = 0; // cancels stale refetches when settings change rapidly
 
   const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
@@ -882,8 +882,11 @@
   function getWalkTarget(durationMin, type) {
     const totalKm = (durationMin / 60) * WALK_PACE_KMH;
     const oneWayIdeal = type === "loop" ? totalKm / 2 : totalKm;
-    // ±30% gives a few candidates to choose from at each duration setting.
-    const oneWayMin = Math.max(0.15, oneWayIdeal * 0.7);
+    // Asymmetric window: very permissive on the close side (a slightly
+    // shorter walk is fine), tighter on the far side (don't blow the time
+    // budget). This keeps short durations from coming back empty when the
+    // area has POIs that are simply nearby.
+    const oneWayMin = Math.max(0.1, oneWayIdeal * 0.4);
     const oneWayMax = oneWayIdeal * 1.3;
     return { oneWayIdeal, oneWayMin, oneWayMax, totalKm };
   }
