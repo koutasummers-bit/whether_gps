@@ -955,62 +955,72 @@
     "https://overpass.openstreetmap.fr/api/interpreter",
   ];
 
-  // Fetch every candidate POI within `radiusKm` and return them with their
-  // distance attached. Caller filters by distance band based on the user's
-  // current time/type settings. `out center 1000` keeps the response from
-  // exploding in dense urban areas while still giving plenty of options at
-  // any band the user might pick.
+  // Race all mirrors simultaneously via Promise.any so the user gets
+  // whichever responds first, instead of waiting through 30 s timeouts on
+  // one mirror at a time. POST + form-encoded body triggers a CORS
+  // preflight (extra round trip); switching to GET with the query in the
+  // URL avoids that and tends to be cached more aggressively too.
   async function fetchNearbyPois(lat, lon, radiusKm) {
     const radius = Math.max(300, Math.round(radiusKm * 1000));
-    const query = `[out:json][timeout:30];
+    // Slimmer query: just the two highest-signal categories so the public
+    // servers can answer in a few seconds even on a busy day.
+    const query = `[out:json][timeout:25];
 (
-  nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
-  nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
+  nwr["leisure"="park"]["name"](around:${radius},${lat},${lon});
   nwr["amenity"="place_of_worship"]["name"](around:${radius},${lat},${lon});
-  nwr["historic"~"^(monument|memorial)$"]["name"](around:${radius},${lat},${lon});
 );
-out center 200;`;
+out center 150;`;
+    const suffix = "?data=" + encodeURIComponent(query);
 
-    let lastErr = null;
-    for (const url of OVERPASS_MIRRORS) {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 30000);
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "data=" + encodeURIComponent(query),
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 30000);
+    let data;
+    try {
+      const attempts = OVERPASS_MIRRORS.map((base) =>
+        fetch(base + suffix, {
+          method: "GET",
           cache: "no-store",
           signal: ctrl.signal,
-        });
-        if (!res.ok) {
-          lastErr = new Error(`Overpass HTTP ${res.status}`);
-          continue;
-        }
-        const data = await res.json();
-        const elements = Array.isArray(data.elements) ? data.elements : [];
-        const pois = [];
-        for (const el of elements) {
-          const eLat = el.lat ?? el.center?.lat;
-          const eLon = el.lon ?? el.center?.lon;
-          if (!Number.isFinite(eLat) || !Number.isFinite(eLon)) continue;
-          const tags = el.tags || {};
-          const name = tags["name:ja"] || tags["name"];
-          if (!name) continue;
-          const type = classifyPoi(tags);
-          if (!type) continue;
-          const distanceKm = haversineKm(lat, lon, eLat, eLon);
-          const id = `${el.type || "node"}/${el.id}`;
-          pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
-        }
-        return pois;
+        }).then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+      );
+      try {
+        data = await Promise.any(attempts);
       } catch (e) {
-        lastErr = e;
-      } finally {
-        clearTimeout(t);
+        if (e && e.name === "AggregateError" && Array.isArray(e.errors)) {
+          const reasons = e.errors
+            .map((er) => (er && er.message) ? er.message : "?")
+            .join("; ");
+          throw new Error(`Overpass: ${reasons}`.slice(0, 160));
+        }
+        throw e;
       }
+      // Cancel the still-running losers and silence their rejections so
+      // they don't surface as unhandled promise errors.
+      ctrl.abort();
+      attempts.forEach((p) => p.catch(() => {}));
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw lastErr || new Error("Overpass all mirrors failed");
+
+    const elements = Array.isArray(data.elements) ? data.elements : [];
+    const pois = [];
+    for (const el of elements) {
+      const eLat = el.lat ?? el.center?.lat;
+      const eLon = el.lon ?? el.center?.lon;
+      if (!Number.isFinite(eLat) || !Number.isFinite(eLon)) continue;
+      const tags = el.tags || {};
+      const name = tags["name:ja"] || tags["name"];
+      if (!name) continue;
+      const type = classifyPoi(tags);
+      if (!type) continue;
+      const distanceKm = haversineKm(lat, lon, eLat, eLon);
+      const id = `${el.type || "node"}/${el.id}`;
+      pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
+    }
+    return pois;
   }
 
   function filterPoisByTarget(allPois, target) {
