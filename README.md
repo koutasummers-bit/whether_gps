@@ -11,6 +11,7 @@
 - 📈 今日の最高 / 最低気温、降水確率、降水量、日の出 / 日の入
 - 👕 今日の最高気温と天気から判定する**おすすめの服装**
 - ☂ 降水確率と降水量から判定する**傘の要否**
+- 🚶 30〜45 分（往復 2〜3km）で行ける近くの**散歩スポット提案**（公園・神社・寺院・展望地・史跡）。地図にも番号付きピンで表示
 - ⏰ 24 時間の時間別予報（横スクロール）
 - 📅 7 日間の週間予報
 
@@ -31,6 +32,7 @@ GitHub Pages を有効化すれば、HTTPS で簡単に公開できます。
 - 現在気温（実測）: [気象庁 AMeDAS](https://www.jma.go.jp/bosai/amedas/)（無料・キー不要）
 - 気象データ（予報・天気・降水確率など）: [Open-Meteo](https://open-meteo.com/)（API キー不要・無料）
 - 地名（逆ジオコーディング）: [BigDataCloud](https://www.bigdatacloud.com/)（API キー不要・無料）
+- 散歩スポット検索: [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)（OSM、無料・キー不要）
 - 地図ライブラリ: [Leaflet](https://leafletjs.com/)（CDN 経由）
 - 地図タイル: [OpenStreetMap](https://www.openstreetmap.org/) 標準タイル
 
