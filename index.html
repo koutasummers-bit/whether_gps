@@ -919,19 +919,22 @@
 
   async function fetchNearbyPois(lat, lon, target) {
     const radius = Math.max(300, Math.round(target.oneWayMax * 1100));
-    const query = `[out:json][timeout:30];
+    // `out center 200` caps the result set so dense areas (Tokyo wards have
+    // hundreds of shrines/parks within 4 km) don't make the response huge.
+    // We only show 3 at a time anyway, so 200 is plenty for variety.
+    const query = `[out:json][timeout:50];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
   nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
   nwr["amenity"="place_of_worship"]["name"](around:${radius},${lat},${lon});
   nwr["historic"~"^(monument|memorial)$"]["name"](around:${radius},${lat},${lon});
 );
-out center;`;
+out center 200;`;
 
     let lastErr = null;
     for (const url of OVERPASS_MIRRORS) {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 18000);
+      const t = setTimeout(() => ctrl.abort(), 35000);
       try {
         const res = await fetch(url, {
           method: "POST",
