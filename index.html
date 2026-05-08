@@ -222,14 +222,22 @@
   }
   .walk-item {
     display: grid;
-    grid-template-columns: 26px 28px 1fr;
+    grid-template-columns: 26px 28px 1fr 16px;
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 10px;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color .12s ease, transform .08s ease;
+    -webkit-tap-highlight-color: transparent;
   }
+  .walk-item:active { transform: scale(.98); }
+  .walk-item:hover { background: var(--surface); }
+  .walk-arrow { color: var(--text-sub); font-size: 14px; text-align: center; }
   .walk-num {
     background: var(--accent);
     color: #ffffff;
@@ -887,7 +895,17 @@ out center;`;
     walkMarkers = [];
   }
 
-  function setWalkMarkers(destinations) {
+  // Google Maps URL for walking directions from origin → destination.
+  // Opens the Google Maps app on iOS/Android if installed, otherwise the
+  // web client. travelmode=walking selects the pedestrian route.
+  function googleMapsWalkUrl(origLat, origLon, destLat, destLon) {
+    const o = `${origLat},${origLon}`;
+    const d = `${destLat},${destLon}`;
+    return `https://www.google.com/maps/dir/?api=1&travelmode=walking`
+      + `&origin=${encodeURIComponent(o)}&destination=${encodeURIComponent(d)}`;
+  }
+
+  function setWalkMarkers(destinations, origLat, origLon) {
     clearWalkMarkers();
     if (!mapInstance || typeof L === "undefined") return;
     destinations.forEach((d, i) => {
@@ -900,41 +918,48 @@ out center;`;
       const marker = L.marker([d.lat, d.lon], { icon }).addTo(mapInstance);
       const distM = Math.round(d.distanceKm * 1000);
       const oneWayMin = Math.round((d.distanceKm / WALK_PACE_KMH) * 60);
-      marker.bindPopup(`<b>${d.name}</b><br>${d.type.label} / 片道 ${distM}m・約 ${oneWayMin}分`);
+      const url = googleMapsWalkUrl(origLat, origLon, d.lat, d.lon);
+      marker.bindPopup(
+        `<b>${d.name}</b><br>${d.type.label} / 片道 ${distM}m・約 ${oneWayMin}分<br>`
+        + `<a href="${url}" target="_blank" rel="noopener">Google マップで開く ↗</a>`
+      );
       walkMarkers.push(marker);
     });
   }
 
-  function renderWalk(destinations, advice) {
+  function renderWalk(destinations, advice, origLat, origLon) {
     walkSummaryEl.textContent = advice.headline;
     walkTipEl.textContent = advice.tip ? "💡 " + advice.tip : "";
 
     if (advice.skip) {
       walkListEl.innerHTML = "";
-      setWalkMarkers([]);
+      setWalkMarkers([], origLat, origLon);
       return;
     }
     if (!destinations || destinations.length === 0) {
       walkListEl.innerHTML = `<div class="walk-empty">近くに条件に合う目的地が見つかりませんでした。</div>`;
-      setWalkMarkers([]);
+      setWalkMarkers([], origLat, origLon);
       return;
     }
 
     walkListEl.innerHTML = destinations.map((d, i) => {
       const distM = Math.round(d.distanceKm * 1000);
       const roundTripMin = Math.round((d.distanceKm * 2 / WALK_PACE_KMH) * 60);
+      const url = googleMapsWalkUrl(origLat, origLon, d.lat, d.lon);
       return `
-        <div class="walk-item">
+        <a class="walk-item" href="${url}" target="_blank" rel="noopener"
+           aria-label="${d.name} へのルートを Google マップで開く">
           <span class="walk-num">${i + 1}</span>
           <span class="walk-emoji">${d.type.emoji}</span>
           <div>
             <div class="walk-name">${d.name}</div>
             <div class="walk-meta">${d.type.label} · 往復 ${roundTripMin}分（片道 ${distM}m）</div>
           </div>
-        </div>
+          <span class="walk-arrow">↗</span>
+        </a>
       `;
     }).join("");
-    setWalkMarkers(destinations);
+    setWalkMarkers(destinations, origLat, origLon);
   }
 
   function getLocation() {
@@ -1227,7 +1252,7 @@ out center;`;
       const tempForWalk = (amedas && Number.isFinite(amedas.temp)) ? amedas.temp : tMax;
       const walkAdvice = getWalkAdvice(todayCode, tempForWalk);
       const walkDestinations = walkAdvice.skip ? [] : rankWalkDestinations(pois, todayCode, tempForWalk);
-      renderWalk(walkDestinations, walkAdvice);
+      renderWalk(walkDestinations, walkAdvice, loc.lat, loc.lon);
 
       renderHourly(hourly, current.time);
       renderDaily(daily);
