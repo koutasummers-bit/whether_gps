@@ -646,13 +646,13 @@
   // can re-rank when the user changes time/type without redoing the weather
   // logic, and `walkSettings` mirrors the segmented controls.
   const WALK_DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
-  let walkPoisRanked = [];
+  let walkPoisAll = [];   // unfiltered cache from one big Overpass fetch
+  let walkPoisRanked = []; // currently displayed (filtered+scored) subset
   let walkShownIds = new Set();
   let walkLastAdvice = null;
   let walkOrigin = null;
   let walkContext = null;
   let walkSettings = { durationMin: 30, type: "loop" };
-  let walkFetchSeq = 0; // cancels stale refetches when settings change rapidly
 
   const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
   const fmtTemp1 = (n) => Number.isFinite(n) ? n.toFixed(1) : "—";
@@ -878,6 +878,10 @@
   // type (loop or one-way); getWalkTarget converts those into the ideal
   // one-way distance to a turnaround/destination plus an acceptance window.
   const WALK_PACE_KMH = 4.0;
+  // Single fetch radius that covers the worst case among all selectable
+  // settings (90-min one-way × 1.3 acceptance ≈ 7.8 km). Fetching once at
+  // this radius and filtering client-side makes setting changes instant.
+  const WALK_FETCH_MAX_KM = 8.0;
 
   function getWalkTarget(durationMin, type) {
     const totalKm = (durationMin / 60) * WALK_PACE_KMH;
@@ -917,11 +921,13 @@
     "https://overpass.openstreetmap.fr/api/interpreter",
   ];
 
-  async function fetchNearbyPois(lat, lon, target) {
-    const radius = Math.max(300, Math.round(target.oneWayMax * 1100));
-    // `out center 200` caps the result set so dense areas (Tokyo wards have
-    // hundreds of shrines/parks within 4 km) don't make the response huge.
-    // We only show 3 at a time anyway, so 200 is plenty for variety.
+  // Fetch every candidate POI within `radiusKm` and return them with their
+  // distance attached. Caller filters by distance band based on the user's
+  // current time/type settings. `out center 1000` keeps the response from
+  // exploding in dense urban areas while still giving plenty of options at
+  // any band the user might pick.
+  async function fetchNearbyPois(lat, lon, radiusKm) {
+    const radius = Math.max(300, Math.round(radiusKm * 1000));
     const query = `[out:json][timeout:50];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
@@ -929,12 +935,12 @@
   nwr["amenity"="place_of_worship"]["name"](around:${radius},${lat},${lon});
   nwr["historic"~"^(monument|memorial)$"]["name"](around:${radius},${lat},${lon});
 );
-out center 200;`;
+out center 1000;`;
 
     let lastErr = null;
     for (const url of OVERPASS_MIRRORS) {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 35000);
+      const t = setTimeout(() => ctrl.abort(), 45000);
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -960,7 +966,6 @@ out center 200;`;
           const type = classifyPoi(tags);
           if (!type) continue;
           const distanceKm = haversineKm(lat, lon, eLat, eLon);
-          if (distanceKm < target.oneWayMin || distanceKm > target.oneWayMax) continue;
           const id = `${el.type || "node"}/${el.id}`;
           pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
         }
@@ -972,6 +977,11 @@ out center 200;`;
       }
     }
     throw lastErr || new Error("Overpass all mirrors failed");
+  }
+
+  function filterPoisByTarget(allPois, target) {
+    return allPois.filter((p) =>
+      p.distanceKm >= target.oneWayMin && p.distanceKm <= target.oneWayMax);
   }
 
   // Attach a weather-aware score to each POI and sort the array in place.
@@ -1136,38 +1146,34 @@ out center 200;`;
     updateWalkRerollButton();
   }
 
-  // Re-fetch POIs for the current walkSettings and re-render. Sequence
-  // counter discards stale responses if the user toggles settings while a
-  // previous request is still in flight.
-  async function refreshWalkSuggestions() {
+  // Re-render walk suggestions from the cached POI set. This is now sync —
+  // settings changes (time / type) just re-filter and re-rank, no network.
+  // The big fetch happens once per refreshAll, into walkPoisAll.
+  function refreshWalkSuggestions() {
     if (!walkOrigin || !walkContext || !walkLastAdvice) return;
+    updateWalkBudgetText();
     if (walkLastAdvice.skip) {
       walkPoisRanked = [];
       walkShownIds = new Set();
       renderWalk([], walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
       return;
     }
-    const seq = ++walkFetchSeq;
-    const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
-    walkListEl.innerHTML = `<div class="walk-empty">候補を検索中…</div>`;
-    walkRerollBtn.classList.add("hidden");
-    updateWalkBudgetText();
-    try {
-      const pois = await fetchNearbyPois(walkOrigin.lat, walkOrigin.lon, target);
-      if (seq !== walkFetchSeq) return;
-      walkPoisRanked = scoreAndSortPois(pois, walkContext.weatherCode, walkContext.tempForDay, target.oneWayIdeal);
-      walkShownIds = new Set();
-      const dests = pickWalkBatch(walkPoisRanked, walkShownIds);
-      renderWalk(dests, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
-    } catch (e) {
-      if (seq !== walkFetchSeq) return;
+    if (!walkPoisAll || walkPoisAll.length === 0) {
       walkPoisRanked = [];
       walkShownIds = new Set();
-      const reason = (e && e.message) ? String(e.message).slice(0, 80) : "";
-      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました${reason ? "（" + reason + "）" : ""}。少し時間をおいて再度お試しください。</div>`;
+      walkListEl.innerHTML = `<div class="walk-empty">候補データを取得できていません。下の「更新」を押して再取得してください。</div>`;
       setWalkMarkers([], walkOrigin.lat, walkOrigin.lon);
       updateWalkRerollButton();
+      return;
     }
+    const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
+    const filtered = filterPoisByTarget(walkPoisAll, target);
+    walkPoisRanked = scoreAndSortPois(
+      filtered, walkContext.weatherCode, walkContext.tempForDay, target.oneWayIdeal
+    );
+    walkShownIds = new Set();
+    const dests = pickWalkBatch(walkPoisRanked, walkShownIds);
+    renderWalk(dests, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
   }
 
   function buildWalkControls() {
@@ -1458,13 +1464,15 @@ out center 200;`;
       // Place name + forecast + AMeDAS observation + nearby walking POIs in
       // parallel. AMeDAS only covers Japan and Overpass is rate-limited; both
       // fall back silently so the rest of the UI keeps working.
-      const initialWalkTarget = getWalkTarget(walkSettings.durationMin, walkSettings.type);
+      // The walk POIs are fetched once at the worst-case radius so changing
+      // duration/type later only re-filters the cache.
       const [placeName, forecast, amedas, pois] = await Promise.all([
         loc.isFallback ? Promise.resolve(FALLBACK.name) : fetchPlaceName(loc.lat, loc.lon),
         fetchForecast(loc.lat, loc.lon),
         fetchAmedasNearest(loc.lat, loc.lon).catch(() => null),
-        fetchNearbyPois(loc.lat, loc.lon, initialWalkTarget).catch(() => []),
+        fetchNearbyPois(loc.lat, loc.lon, WALK_FETCH_MAX_KM).catch(() => []),
       ]);
+      walkPoisAll = pois;
 
       const displayName = placeName || fmtCoord(loc.lat, loc.lon);
       placeEl.textContent = displayName;
@@ -1485,25 +1493,16 @@ out center 200;`;
       renderRecommendation(outfitEl, recommendOutfit({ tMax, tMin, code: todayCode }));
       renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
 
-      // Walk recommendation: skip suggestions in heavy weather, otherwise
-      // score+sort the POIs that came back with the current settings and
-      // show the first batch. Settings changes call refreshWalkSuggestions
-      // separately to refetch with a new radius if needed.
+      // Walk recommendation: store context and let refreshWalkSuggestions()
+      // filter the freshly populated walkPoisAll cache for the active
+      // duration/type settings. Settings changes after this just re-filter
+      // synchronously; no further Overpass calls until the next refreshAll.
       const tempForWalk = (amedas && Number.isFinite(amedas.temp)) ? amedas.temp : tMax;
       const walkAdvice = getWalkAdvice(todayCode, tempForWalk);
       walkLastAdvice = walkAdvice;
       walkOrigin = { lat: loc.lat, lon: loc.lon };
       walkContext = { weatherCode: todayCode, tempForDay: tempForWalk };
-      if (walkAdvice.skip) {
-        walkPoisRanked = [];
-        walkShownIds = new Set();
-        renderWalk([], walkAdvice, loc.lat, loc.lon);
-      } else {
-        walkPoisRanked = scoreAndSortPois(pois, todayCode, tempForWalk, initialWalkTarget.oneWayIdeal);
-        walkShownIds = new Set();
-        const walkDestinations = pickWalkBatch(walkPoisRanked, walkShownIds);
-        renderWalk(walkDestinations, walkAdvice, loc.lat, loc.lon);
-      }
+      refreshWalkSuggestions();
 
       renderHourly(hourly, current.time);
       renderDaily(daily);
