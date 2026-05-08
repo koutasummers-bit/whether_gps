@@ -6,7 +6,8 @@
 
 - 📍 ブラウザの位置情報 API で現在地を取得（拒否時は東京駅にフォールバック）
 - 🗺 現在地を地図（Leaflet + OpenStreetMap / CARTO Dark）でも表示
-- ⛅ 現在の天気・気温・体感・湿度・風速
+- 🛰 現在気温は **気象庁 AMeDAS の最寄り観測所（実測値・10 分更新）** を優先利用、海外や AMeDAS 取得失敗時は Open-Meteo の予測値にフォールバック
+- ⛅ 現在の天気・体感・湿度・風速
 - 📈 今日の最高 / 最低気温、降水確率、降水量、日の出 / 日の入
 - 👕 今日の最高気温と天気から判定する**おすすめの服装**
 - ☂ 降水確率と降水量から判定する**傘の要否**
@@ -27,7 +28,8 @@ GitHub Pages を有効化すれば、HTTPS で簡単に公開できます。
 
 ## データ出典
 
-- 気象データ: [Open-Meteo](https://open-meteo.com/)（API キー不要・無料）
+- 現在気温（実測）: [気象庁 AMeDAS](https://www.jma.go.jp/bosai/amedas/)（無料・キー不要）
+- 気象データ（予報・天気・降水確率など）: [Open-Meteo](https://open-meteo.com/)（API キー不要・無料）
 - 地名（逆ジオコーディング）: [BigDataCloud](https://www.bigdatacloud.com/)（API キー不要・無料）
 - 地図ライブラリ: [Leaflet](https://leafletjs.com/)（CDN 経由）
 - 地図タイル: [OpenStreetMap](https://www.openstreetmap.org/) 標準タイル

@@ -165,6 +165,14 @@
     margin-top: 4px;
   }
   .hero .meta-row span b { color: var(--text); font-weight: 600; }
+  .hero .source {
+    grid-column: 1 / -1;
+    grid-row: 5;
+    font-size: 11px;
+    color: var(--text-sub);
+    margin-top: 6px;
+    letter-spacing: .02em;
+  }
 
   /* Today summary */
   .today {
@@ -583,6 +591,99 @@
     }
   }
 
+  async function fetchText(url, timeoutMs = 6000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.text();
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // --- Geometry helpers ---
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const toRad = (d) => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // Steadman/BoM apparent temperature (the formula Open-Meteo uses).
+  function calcApparentTemp(t, rh, v) {
+    if (!Number.isFinite(t) || !Number.isFinite(rh) || !Number.isFinite(v)) return null;
+    const e = (rh / 100) * 6.105 * Math.exp((17.27 * t) / (237.7 + t));
+    return t + 0.33 * e - 0.7 * v - 4.0;
+  }
+
+  // --- AMeDAS (Japan Meteorological Agency observations) ---
+  let amedasStationsPromise = null;
+  function loadAmedasStations() {
+    if (!amedasStationsPromise) {
+      amedasStationsPromise = fetchJson(
+        "https://www.jma.go.jp/bosai/amedas/const/amedastable.json",
+        8000
+      ).catch((e) => { amedasStationsPromise = null; throw e; });
+    }
+    return amedasStationsPromise;
+  }
+
+  // Returns the nearest AMeDAS observation (within ~30km, i.e. inside Japan)
+  // or null. Throws on network failure so the caller can decide to fall back.
+  async function fetchAmedasNearest(lat, lon) {
+    const [stations, latestText] = await Promise.all([
+      loadAmedasStations(),
+      fetchText("https://www.jma.go.jp/bosai/amedas/data/latest_time.txt", 6000),
+    ]);
+    const m = latestText.trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    if (!m) throw new Error("invalid AMeDAS latest_time");
+    const tsKey = m[1] + m[2] + m[3] + m[4] + m[5] + m[6];
+    const timeLabel = `${m[4]}:${m[5]}`;
+    const mapData = await fetchJson(
+      `https://www.jma.go.jp/bosai/amedas/data/map/${tsKey}.json`,
+      8000
+    );
+
+    const cosLat = Math.cos(lat * Math.PI / 180);
+    let bestId = null;
+    let bestRough = Infinity;
+    for (const id in mapData) {
+      const r = mapData[id];
+      if (!r || !Array.isArray(r.temp) || !Number.isFinite(r.temp[0])) continue;
+      const s = stations[id];
+      if (!s || !Array.isArray(s.lat) || !Array.isArray(s.lon)) continue;
+      const sLat = s.lat[0] + s.lat[1] / 60;
+      const sLon = s.lon[0] + s.lon[1] / 60;
+      const dlat = lat - sLat;
+      const dlon = (lon - sLon) * cosLat;
+      const d = dlat * dlat + dlon * dlon;
+      if (d < bestRough) { bestRough = d; bestId = id; }
+    }
+    if (!bestId) return null;
+
+    const station = stations[bestId];
+    const sLat = station.lat[0] + station.lat[1] / 60;
+    const sLon = station.lon[0] + station.lon[1] / 60;
+    const km = haversineKm(lat, lon, sLat, sLon);
+    if (km > 30) return null; // outside Japan
+
+    const reading = mapData[bestId];
+    const num = (a) => Array.isArray(a) && Number.isFinite(a[0]) ? a[0] : null;
+    return {
+      stationName: station.kjName || station.enName || bestId,
+      distanceKm: km,
+      timeLabel,
+      temp: num(reading.temp),
+      humidity: num(reading.humidity),
+      windSpeed: num(reading.wind),
+    };
+  }
+
   function getLocation() {
     return new Promise((resolve) => {
       if (!("geolocation" in navigator)) {
@@ -664,19 +765,35 @@
     errBox.textContent = "";
   }
 
-  function renderCurrent(current, todayMax, todayMin) {
+  function renderCurrent(current, todayMax, todayMin, amedas) {
     const info = weatherCodeToInfo(current.weather_code);
+    const useAmedas = amedas && Number.isFinite(amedas.temp);
+
+    const temp = useAmedas ? amedas.temp : current.temperature_2m;
+    const humidity = useAmedas && Number.isFinite(amedas.humidity)
+      ? amedas.humidity : current.relative_humidity_2m;
+    const windSpeed = useAmedas && Number.isFinite(amedas.windSpeed)
+      ? amedas.windSpeed : current.wind_speed_10m;
+    const apparent = useAmedas
+      ? calcApparentTemp(temp, humidity, windSpeed)
+      : current.apparent_temperature;
+
+    const sourceLabel = useAmedas
+      ? `🛰 AMeDAS ${amedas.stationName}（約${amedas.distanceKm.toFixed(1)}km）${amedas.timeLabel} 観測`
+      : (current.time ? `Open-Meteo ${fmtTime(current.time)} 時点（予測値）` : "");
+
     heroEl.innerHTML = `
       <div class="label">現在</div>
-      <div class="temp">${fmtTemp(current.temperature_2m)}<span class="unit">°C</span></div>
+      <div class="temp">${fmtTemp(temp)}<span class="unit">°C</span></div>
       <div class="icon">${info.emoji}</div>
       <div class="summary">${info.label}</div>
       <div class="meta-row">
-        <span>体感 <b>${fmtTemp(current.apparent_temperature)}°C</b></span>
-        <span>湿度 <b>${fmtPct(current.relative_humidity_2m)}</b></span>
-        <span>風速 <b>${fmtTemp1(current.wind_speed_10m)} m/s</b></span>
+        <span>体感 <b>${fmtTemp(apparent)}°C</b></span>
+        <span>湿度 <b>${fmtPct(humidity)}</b></span>
+        <span>風速 <b>${fmtTemp1(windSpeed)} m/s</b></span>
         <span>今日 <b style="color:var(--warm);">${fmtTemp(todayMax)}°</b> / <b style="color:var(--cool);">${fmtTemp(todayMin)}°</b></span>
       </div>
+      <div class="source">${sourceLabel}</div>
     `;
   }
 
@@ -822,10 +939,13 @@
         noticeEl.textContent = "";
       }
 
-      // Place name + forecast in parallel
-      const [placeName, forecast] = await Promise.all([
+      // Place name + forecast + AMeDAS observation in parallel.
+      // AMeDAS only covers Japan; failures or out-of-range results fall back
+      // to Open-Meteo's modeled "current" value silently.
+      const [placeName, forecast, amedas] = await Promise.all([
         loc.isFallback ? Promise.resolve(FALLBACK.name) : fetchPlaceName(loc.lat, loc.lon),
         fetchForecast(loc.lat, loc.lon),
+        fetchAmedasNearest(loc.lat, loc.lon).catch(() => null),
       ]);
 
       const displayName = placeName || fmtCoord(loc.lat, loc.lon);
@@ -842,7 +962,7 @@
       const popMax = daily.precipitation_probability_max?.[0];
       const precipSum = daily.precipitation_sum?.[0];
 
-      renderCurrent(current, tMax, tMin);
+      renderCurrent(current, tMax, tMin, amedas);
       renderToday(daily);
       renderRecommendation(outfitEl, recommendOutfit({ tMax, tMin, code: todayCode }));
       renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
