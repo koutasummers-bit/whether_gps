@@ -290,14 +290,22 @@
   }
   .walk-skeleton-item {
     height: 56px;
-    background: linear-gradient(90deg, var(--surface-2) 0%, rgba(255, 255, 255, .05) 50%, var(--surface-2) 100%);
-    background-size: 200% 100%;
-    animation: shimmer 1.4s infinite;
+    background:
+      linear-gradient(
+        90deg,
+        var(--surface-2) 0%,
+        rgba(143, 175, 255, .18) 40%,
+        rgba(143, 175, 255, .35) 50%,
+        rgba(143, 175, 255, .18) 60%,
+        var(--surface-2) 100%
+      );
+    background-size: 220% 100%;
+    animation: shimmer 1.2s linear infinite;
     border: 1px solid var(--border);
     border-radius: 10px;
   }
-  .walk-skeleton-item:nth-child(2) { animation-delay: .12s; }
-  .walk-skeleton-item:nth-child(3) { animation-delay: .24s; }
+  .walk-skeleton-item:nth-child(2) { animation-delay: .15s; }
+  .walk-skeleton-item:nth-child(3) { animation-delay: .30s; }
   .walk-tip {
     font-size: 12px;
     color: var(--text-sub);
