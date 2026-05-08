@@ -573,13 +573,6 @@
             <span class="walk-control-label">時間</span>
             <div class="walk-segment" id="walk-duration"></div>
           </div>
-          <div class="walk-control-row">
-            <span class="walk-control-label">形式</span>
-            <div class="walk-segment" id="walk-type">
-              <button type="button" data-type="loop">往復（同じ地点に戻る）</button>
-              <button type="button" data-type="oneway">片道（別の地点へ）</button>
-            </div>
-          </div>
         </div>
         <div class="walk-budget" id="walk-budget"></div>
         <div class="walk-list" id="walk-list"></div>
@@ -635,7 +628,6 @@
   const walkRerollBtn  = document.getElementById("walk-reroll");
   const walkBudgetEl   = document.getElementById("walk-budget");
   const walkDurationEl = document.getElementById("walk-duration");
-  const walkTypeEl     = document.getElementById("walk-type");
 
   let mapInstance = null;
   let mapMarker = null;
@@ -645,7 +637,7 @@
   // reroll button cycles through, `walkContext` keeps weather inputs so we
   // can re-rank when the user changes time/type without redoing the weather
   // logic, and `walkSettings` mirrors the segmented controls.
-  const WALK_DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
+  const WALK_DURATION_OPTIONS = [30, 45];
   let walkPoisAll = [];   // unfiltered cache from one big Overpass fetch
   let walkPoisRanked = []; // currently displayed (filtered+scored) subset
   let walkShownIds = new Set();
@@ -878,11 +870,10 @@
   // type (loop or one-way); getWalkTarget converts those into the ideal
   // one-way distance to a turnaround/destination plus an acceptance window.
   const WALK_PACE_KMH = 4.0;
-  // Single fetch radius. 4 km balances reliability (public Overpass mirrors
-  // start timing out around 6 km in dense urban areas) against coverage:
-  // it covers all loop durations 15-90 min and one-way 15-60 min. One-way
-  // 75/90 min would need 5-6 km and may surface few/no candidates.
-  const WALK_FETCH_MAX_KM = 4.0;
+  // Single fetch radius. Loop-only with max 45 min gives ideal one-way
+  // 1.5 km × 1.3 acceptance ≈ 2 km, so 2.5 km is plenty and the small
+  // query area lets the public Overpass mirrors respond in a few seconds.
+  const WALK_FETCH_MAX_KM = 2.5;
 
   function getWalkTarget(durationMin, type) {
     const totalKm = (durationMin / 60) * WALK_PACE_KMH;
@@ -929,19 +920,19 @@
   // any band the user might pick.
   async function fetchNearbyPois(lat, lon, radiusKm) {
     const radius = Math.max(300, Math.round(radiusKm * 1000));
-    const query = `[out:json][timeout:50];
+    const query = `[out:json][timeout:20];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
   nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
   nwr["amenity"="place_of_worship"]["name"](around:${radius},${lat},${lon});
   nwr["historic"~"^(monument|memorial)$"]["name"](around:${radius},${lat},${lon});
 );
-out center 500;`;
+out center 200;`;
 
     let lastErr = null;
     for (const url of OVERPASS_MIRRORS) {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 45000);
+      const t = setTimeout(() => ctrl.abort(), 15000);
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -1095,16 +1086,7 @@ out center 500;`;
 
   function updateWalkBudgetText() {
     const target = getWalkTarget(walkSettings.durationMin, walkSettings.type);
-    let line;
-    if (walkSettings.type === "loop") {
-      line = `所要時間目安: ${walkSettings.durationMin}分（往復 約 ${(target.oneWayIdeal * 2).toFixed(1)}km）`;
-    } else {
-      line = `所要時間目安: ${walkSettings.durationMin}分（片道 約 ${target.oneWayIdeal.toFixed(1)}km）`;
-    }
-    if (target.oneWayIdeal > WALK_FETCH_MAX_KM) {
-      line += `（※${WALK_FETCH_MAX_KM}km 以遠は対象外）`;
-    }
-    walkBudgetEl.textContent = line;
+    walkBudgetEl.textContent = `所要時間目安: ${walkSettings.durationMin}分（往復 約 ${(target.oneWayIdeal * 2).toFixed(1)}km）`;
   }
 
   function renderWalk(destinations, advice, origLat, origLon) {
@@ -1125,13 +1107,10 @@ out center 500;`;
       return;
     }
 
-    const isLoop = walkSettings.type === "loop";
     walkListEl.innerHTML = destinations.map((d, i) => {
       const distM = Math.round(d.distanceKm * 1000);
       const oneWayMin = Math.round((d.distanceKm / WALK_PACE_KMH) * 60);
-      const meta = isLoop
-        ? `${d.type.label} · 往復 ${oneWayMin * 2}分（片道 ${distM}m）`
-        : `${d.type.label} · 片道 ${oneWayMin}分（${distM}m）`;
+      const meta = `${d.type.label} · 往復 ${oneWayMin * 2}分（片道 ${distM}m）`;
       const url = googleMapsWalkUrl(origLat, origLon, d.lat, d.lon);
       return `
         <a class="walk-item" href="${url}" target="_blank" rel="noopener"
@@ -1192,17 +1171,6 @@ out center 500;`;
         walkSettings.durationMin = v;
         walkDurationEl.querySelectorAll("button").forEach((b) =>
           b.classList.toggle("active", Number(b.dataset.duration) === v));
-        refreshWalkSuggestions();
-      });
-    });
-    walkTypeEl.querySelectorAll("button").forEach((btn) => {
-      if (btn.dataset.type === walkSettings.type) btn.classList.add("active");
-      btn.addEventListener("click", () => {
-        const v = btn.dataset.type;
-        if (v === walkSettings.type) return;
-        walkSettings.type = v;
-        walkTypeEl.querySelectorAll("button").forEach((b) =>
-          b.classList.toggle("active", b.dataset.type === v));
         refreshWalkSuggestions();
       });
     });
