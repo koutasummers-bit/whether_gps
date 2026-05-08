@@ -908,11 +908,18 @@
     return null;
   }
 
+  // Public Overpass instances. The main `overpass-api.de` host frequently
+  // throttles or times out medium-radius queries on weekdays — fall through
+  // to the secondary mirrors before giving up.
+  const OVERPASS_MIRRORS = [
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
+  ];
+
   async function fetchNearbyPois(lat, lon, target) {
-    // Add a small buffer to the search radius so POIs near the upper bound
-    // are not cut off by Overpass' rounding to integer meters.
     const radius = Math.max(300, Math.round(target.oneWayMax * 1100));
-    const query = `[out:json][timeout:25];
+    const query = `[out:json][timeout:30];
 (
   nwr["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
   nwr["tourism"="viewpoint"]["name"](around:${radius},${lat},${lon});
@@ -920,38 +927,48 @@
   nwr["historic"~"^(monument|memorial)$"]["name"](around:${radius},${lat},${lon});
 );
 out center;`;
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 25000);
-    try {
-      const res = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "data=" + encodeURIComponent(query),
-        cache: "no-store",
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error("Overpass HTTP " + res.status);
-      const data = await res.json();
-      const elements = Array.isArray(data.elements) ? data.elements : [];
-      const pois = [];
-      for (const el of elements) {
-        const eLat = el.lat ?? el.center?.lat;
-        const eLon = el.lon ?? el.center?.lon;
-        if (!Number.isFinite(eLat) || !Number.isFinite(eLon)) continue;
-        const tags = el.tags || {};
-        const name = tags["name:ja"] || tags["name"];
-        if (!name) continue;
-        const type = classifyPoi(tags);
-        if (!type) continue;
-        const distanceKm = haversineKm(lat, lon, eLat, eLon);
-        if (distanceKm < target.oneWayMin || distanceKm > target.oneWayMax) continue;
-        const id = `${el.type || "node"}/${el.id}`;
-        pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
+
+    let lastErr = null;
+    for (const url of OVERPASS_MIRRORS) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 18000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "data=" + encodeURIComponent(query),
+          cache: "no-store",
+          signal: ctrl.signal,
+        });
+        if (!res.ok) {
+          lastErr = new Error(`Overpass HTTP ${res.status}`);
+          continue;
+        }
+        const data = await res.json();
+        const elements = Array.isArray(data.elements) ? data.elements : [];
+        const pois = [];
+        for (const el of elements) {
+          const eLat = el.lat ?? el.center?.lat;
+          const eLon = el.lon ?? el.center?.lon;
+          if (!Number.isFinite(eLat) || !Number.isFinite(eLon)) continue;
+          const tags = el.tags || {};
+          const name = tags["name:ja"] || tags["name"];
+          if (!name) continue;
+          const type = classifyPoi(tags);
+          if (!type) continue;
+          const distanceKm = haversineKm(lat, lon, eLat, eLon);
+          if (distanceKm < target.oneWayMin || distanceKm > target.oneWayMax) continue;
+          const id = `${el.type || "node"}/${el.id}`;
+          pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
+        }
+        return pois;
+      } catch (e) {
+        lastErr = e;
+      } finally {
+        clearTimeout(t);
       }
-      return pois;
-    } finally {
-      clearTimeout(t);
     }
+    throw lastErr || new Error("Overpass all mirrors failed");
   }
 
   // Attach a weather-aware score to each POI and sort the array in place.
@@ -1139,11 +1156,12 @@ out center;`;
       walkShownIds = new Set();
       const dests = pickWalkBatch(walkPoisRanked, walkShownIds);
       renderWalk(dests, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
-    } catch {
+    } catch (e) {
       if (seq !== walkFetchSeq) return;
       walkPoisRanked = [];
       walkShownIds = new Set();
-      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました</div>`;
+      const reason = (e && e.message) ? String(e.message).slice(0, 80) : "";
+      walkListEl.innerHTML = `<div class="walk-empty">候補の取得に失敗しました${reason ? "（" + reason + "）" : ""}。少し時間をおいて再度お試しください。</div>`;
       setWalkMarkers([], walkOrigin.lat, walkOrigin.lon);
       updateWalkRerollButton();
     }
