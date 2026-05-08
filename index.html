@@ -955,55 +955,56 @@
     "https://overpass.openstreetmap.fr/api/interpreter",
   ];
 
-  // Race all mirrors simultaneously via Promise.any so the user gets
-  // whichever responds first, instead of waiting through 30 s timeouts on
-  // one mirror at a time. POST + form-encoded body triggers a CORS
-  // preflight (extra round trip); switching to GET with the query in the
-  // URL avoids that and tends to be cached more aggressively too.
+  // Public CORS proxies. Tried in order — if iOS Safari's direct fetch to
+  // Overpass keeps hanging (as seen with the user's network), routing the
+  // exact same request through a proxy frequently completes because the
+  // proxy origin is well-known to Safari and the response is small.
+  const CORS_PROXIES = [
+    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`,
+  ];
+
   async function fetchNearbyPois(lat, lon, radiusKm) {
     const radius = Math.max(300, Math.round(radiusKm * 1000));
-    // Slimmer query: just the two highest-signal categories so the public
-    // servers can answer in a few seconds even on a busy day.
     const query = `[out:json][timeout:25];
 (
   nwr["leisure"="park"]["name"](around:${radius},${lat},${lon});
   nwr["amenity"="place_of_worship"]["name"](around:${radius},${lat},${lon});
 );
 out center 150;`;
-    const suffix = "?data=" + encodeURIComponent(query);
+    const directUrl = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
 
-    const ctrl = new AbortController();
-    const timeoutId = setTimeout(() => ctrl.abort(), 30000);
-    let data;
-    try {
-      const attempts = OVERPASS_MIRRORS.map((base) =>
-        fetch(base + suffix, {
-          method: "GET",
-          cache: "no-store",
-          signal: ctrl.signal,
-        }).then(async (res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-      );
+    // Try direct first (fastest if it works), then fall through to each
+    // CORS proxy. Each attempt has its own 25 s timeout so a stuck attempt
+    // can't block the next one.
+    const attempts = [
+      { name: "direct", url: directUrl },
+      ...CORS_PROXIES.map((wrap, i) => ({ name: `proxy${i + 1}`, url: wrap(directUrl) })),
+    ];
+
+    let lastErr = null;
+    let data = null;
+    for (const a of attempts) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
       try {
-        data = await Promise.any(attempts);
-      } catch (e) {
-        if (e && e.name === "AggregateError" && Array.isArray(e.errors)) {
-          const reasons = e.errors
-            .map((er) => (er && er.message) ? er.message : "?")
-            .join("; ");
-          throw new Error(`Overpass: ${reasons}`.slice(0, 160));
+        const res = await fetch(a.url, { method: "GET", signal: ctrl.signal });
+        if (!res.ok) {
+          lastErr = new Error(`${a.name} HTTP ${res.status}`);
+          continue;
         }
-        throw e;
+        data = await res.json();
+        break;
+      } catch (e) {
+        const reason = (e && e.name === "AbortError") ? "timeout"
+          : ((e && e.message) || "failed");
+        lastErr = new Error(`${a.name}: ${reason}`);
+      } finally {
+        clearTimeout(t);
       }
-      // Cancel the still-running losers and silence their rejections so
-      // they don't surface as unhandled promise errors.
-      ctrl.abort();
-      attempts.forEach((p) => p.catch(() => {}));
-    } finally {
-      clearTimeout(timeoutId);
     }
+    if (!data) throw lastErr || new Error("Overpass: all attempts failed");
 
     const elements = Array.isArray(data.elements) ? data.elements : [];
     const pois = [];
