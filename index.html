@@ -265,6 +265,24 @@
     color: var(--text-sub);
     margin: 10px 0 0;
   }
+  .walk-reroll {
+    width: 100%;
+    margin-top: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color .12s ease, transform .08s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .walk-reroll:active { transform: scale(.98); }
+  .walk-reroll:hover { background: var(--surface); }
+  .walk-reroll:disabled { opacity: .4; cursor: not-allowed; }
+  .walk-reroll.hidden { display: none; }
   .walk-pin {
     background: var(--accent);
     color: #ffffff;
@@ -501,6 +519,7 @@
         <div class="walk-summary" id="walk-summary"><span class="skeleton">読み込み中</span></div>
         <div class="walk-budget">所要時間目安: 30〜45分（往復 2〜3km）</div>
         <div class="walk-list" id="walk-list"></div>
+        <button class="walk-reroll hidden" id="walk-reroll" type="button">🔄 別の候補を見る</button>
         <p class="walk-tip" id="walk-tip"></p>
       </section>
 
@@ -549,10 +568,18 @@
   const walkSummaryEl = document.getElementById("walk-summary");
   const walkListEl    = document.getElementById("walk-list");
   const walkTipEl     = document.getElementById("walk-tip");
+  const walkRerollBtn = document.getElementById("walk-reroll");
 
   let mapInstance = null;
   let mapMarker = null;
   let walkMarkers = [];
+
+  // Walk recommendation state, used so the reroll button can pick a fresh
+  // batch from the same Overpass result without re-fetching.
+  let walkPoisRanked = [];
+  let walkShownIds = new Set();
+  let walkLastAdvice = null;
+  let walkOrigin = null;
 
   const fmtTemp = (n) => Number.isFinite(n) ? Math.round(n).toString() : "—";
   const fmtTemp1 = (n) => Number.isFinite(n) ? n.toFixed(1) : "—";
@@ -833,7 +860,8 @@ out center;`;
         if (!type) continue;
         const distanceKm = haversineKm(lat, lon, eLat, eLon);
         if (distanceKm < WALK_ONEWAY_MIN_KM || distanceKm > WALK_ONEWAY_MAX_KM) continue;
-        pois.push({ name, lat: eLat, lon: eLon, distanceKm, type });
+        const id = `${el.type || "node"}/${el.id}`;
+        pois.push({ id, name, lat: eLat, lon: eLon, distanceKm, type });
       }
       return pois;
     } finally {
@@ -841,7 +869,8 @@ out center;`;
     }
   }
 
-  function rankWalkDestinations(pois, weatherCode, tempForDay) {
+  // Attach a weather-aware score to each POI and sort the array in place.
+  function scoreAndSortPois(pois, weatherCode, tempForDay) {
     const isHot = Number.isFinite(tempForDay) && tempForDay >= 30;
     const isLightRain = [51, 53, 55, 56, 57].includes(weatherCode);
     const basePriority = { park: 5, garden: 4, viewpoint: 4, shrine: 3, temple: 3, worship: 2, historic: 2 };
@@ -853,17 +882,31 @@ out center;`;
       p._score = s;
     }
     pois.sort((a, b) => b._score - a._score);
+    return pois;
+  }
+
+  // Pick up to `n` candidates that haven't been shown yet, preferring type
+  // diversity. When everything has been shown once, reset and start over so
+  // the user can keep tapping "別の候補を見る" without ever hitting a dead end.
+  function pickWalkBatch(ranked, shownIds, n = 3) {
+    if (!ranked.length) return [];
+    let pool = ranked.filter((p) => !shownIds.has(p.id));
+    if (pool.length === 0) {
+      shownIds.clear();
+      pool = ranked.slice();
+    }
     const picked = [];
     const usedKeys = new Set();
-    for (const p of pois) {
-      if (picked.length >= 3) break;
+    for (const p of pool) {
+      if (picked.length >= n) break;
       if (usedKeys.has(p.type.key)) continue;
       picked.push(p); usedKeys.add(p.type.key);
     }
-    for (const p of pois) {
-      if (picked.length >= 3) break;
+    for (const p of pool) {
+      if (picked.length >= n) break;
       if (!picked.includes(p)) picked.push(p);
     }
+    picked.forEach((p) => shownIds.add(p.id));
     return picked;
   }
 
@@ -927,6 +970,13 @@ out center;`;
     });
   }
 
+  function updateWalkRerollButton() {
+    const canReroll = !!walkLastAdvice
+      && !walkLastAdvice.skip
+      && walkPoisRanked.length > 3;
+    walkRerollBtn.classList.toggle("hidden", !canReroll);
+  }
+
   function renderWalk(destinations, advice, origLat, origLon) {
     walkSummaryEl.textContent = advice.headline;
     walkTipEl.textContent = advice.tip ? "💡 " + advice.tip : "";
@@ -934,11 +984,13 @@ out center;`;
     if (advice.skip) {
       walkListEl.innerHTML = "";
       setWalkMarkers([], origLat, origLon);
+      updateWalkRerollButton();
       return;
     }
     if (!destinations || destinations.length === 0) {
       walkListEl.innerHTML = `<div class="walk-empty">近くに条件に合う目的地が見つかりませんでした。</div>`;
       setWalkMarkers([], origLat, origLon);
+      updateWalkRerollButton();
       return;
     }
 
@@ -960,6 +1012,7 @@ out center;`;
       `;
     }).join("");
     setWalkMarkers(destinations, origLat, origLon);
+    updateWalkRerollButton();
   }
 
   function getLocation() {
@@ -1246,12 +1299,18 @@ out center;`;
       renderRecommendation(outfitEl, recommendOutfit({ tMax, tMin, code: todayCode }));
       renderRecommendation(umbrellaEl, recommendUmbrella({ popMax, precipSum }));
 
-      // Walk recommendation: skip suggestions in heavy weather, otherwise rank
-      // and show up to 3 nearby destinations. Use AMeDAS temp if available
-      // since hot/cold thresholds matter for advice text; otherwise use tMax.
+      // Walk recommendation: skip suggestions in heavy weather, otherwise
+      // score+sort all POIs once and show the first batch of 3. The reroll
+      // button advances through the sorted list using the same state.
       const tempForWalk = (amedas && Number.isFinite(amedas.temp)) ? amedas.temp : tMax;
       const walkAdvice = getWalkAdvice(todayCode, tempForWalk);
-      const walkDestinations = walkAdvice.skip ? [] : rankWalkDestinations(pois, todayCode, tempForWalk);
+      walkPoisRanked = walkAdvice.skip ? [] : scoreAndSortPois(pois, todayCode, tempForWalk);
+      walkShownIds = new Set();
+      walkLastAdvice = walkAdvice;
+      walkOrigin = { lat: loc.lat, lon: loc.lon };
+      const walkDestinations = walkAdvice.skip
+        ? []
+        : pickWalkBatch(walkPoisRanked, walkShownIds);
       renderWalk(walkDestinations, walkAdvice, loc.lat, loc.lon);
 
       renderHourly(hourly, current.time);
@@ -1277,6 +1336,11 @@ out center;`;
   }
 
   refreshBtn.addEventListener("click", refreshAll);
+  walkRerollBtn.addEventListener("click", () => {
+    if (!walkLastAdvice || walkLastAdvice.skip || !walkOrigin) return;
+    const next = pickWalkBatch(walkPoisRanked, walkShownIds);
+    renderWalk(next, walkLastAdvice, walkOrigin.lat, walkOrigin.lon);
+  });
   refreshAll();
 })();
 </script>
